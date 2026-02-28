@@ -123,6 +123,32 @@ class MusicCog(commands.Cog):
         self.queue_manager.clear(guild_id)
         self.last_active_by_guild.pop(guild_id, None)
 
+    async def _delete_now_playing_message(
+        self, guild: discord.Guild, fallback_channel_id: int | None = None
+    ) -> None:
+        state = self.queue_manager.get(guild.id)
+        if state.now_playing_message_id is None:
+            return
+
+        channel = self._resolve_announce_channel(guild, fallback_channel_id)
+        if channel is None:
+            state.now_playing_message_id = None
+            return
+
+        old_message = channel.get_partial_message(state.now_playing_message_id)
+        try:
+            await old_message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass
+        finally:
+            state.now_playing_message_id = None
+
+    async def _cleanup_after_disconnect(
+        self, guild: discord.Guild, fallback_channel_id: int | None = None
+    ) -> None:
+        await self._delete_now_playing_message(guild, fallback_channel_id)
+        self._clear_guild_voice_state(guild.id)
+
     def _cache_autocomplete_results(
         self, cache_key: tuple[int, str], tracks: list[Track]
     ) -> None:
@@ -435,7 +461,7 @@ class MusicCog(commands.Cog):
             last_active = self.last_active_by_guild.get(guild.id, now)
             if now - last_active >= timedelta(minutes=5):
                 await voice.disconnect(force=True)
-                self._clear_guild_voice_state(guild.id)
+                await self._cleanup_after_disconnect(guild)
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -451,7 +477,7 @@ class MusicCog(commands.Cog):
         if member.guild is None:
             return
         if before.channel is not None and after.channel is None:
-            self._clear_guild_voice_state(member.guild.id)
+            await self._cleanup_after_disconnect(member.guild)
 
     @idle_disconnect.before_loop
     async def before_idle_disconnect(self) -> None:
@@ -673,7 +699,7 @@ class MusicCog(commands.Cog):
             return
 
         await voice.disconnect(force=True)
-        self._clear_guild_voice_state(guild.id)
+        await self._cleanup_after_disconnect(guild, interaction.channel_id)
         await interaction.response.send_message("Left the voice channel and cleared the queue.")
 
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
