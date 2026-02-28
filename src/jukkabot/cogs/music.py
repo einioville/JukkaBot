@@ -378,14 +378,14 @@ class MusicCog(commands.Cog):
             try:
                 await old_message.edit(embed=embed)
                 return
-            except (discord.NotFound, discord.Forbidden):
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
         if state.now_playing_message_id:
             old_message = channel.get_partial_message(state.now_playing_message_id)
             try:
                 await old_message.delete()
-            except (discord.NotFound, discord.Forbidden):
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
         controls = NowPlayingControls(self, guild.id)
@@ -867,7 +867,9 @@ class MusicCog(commands.Cog):
 
         await self._ack_silent(interaction)
         await self._toggle_pause(guild)
-        await self._refresh_now_playing(guild, interaction.channel_id)
+        await self._refresh_now_playing(
+            guild, interaction.channel_id, edit_existing=True
+        )
         self._touch_activity(guild.id)
         await self._finalize_silent(interaction)
 

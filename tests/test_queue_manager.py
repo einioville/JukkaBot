@@ -57,3 +57,20 @@ def test_queue_track_stores_requester() -> None:
     assert queued is not None
     assert queued.requested_by_user_id == 12345
     assert queued.requested_by_display_name == "ville"
+
+
+def test_clear_preserves_filter_state_by_default() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.active_filter_preset = "edm"
+    state.active_audio_filter = "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"
+    manager.add_track(1, make_track("song"))
+    manager.pop_next(1)
+
+    manager.clear(1)
+
+    cleared = manager.get(1)
+    assert list(cleared.queue) == []
+    assert cleared.current_track is None
+    assert cleared.active_filter_preset == "edm"
+    assert cleared.active_audio_filter == "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"

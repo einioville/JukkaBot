@@ -91,13 +91,14 @@ class QueueManager:
         random.shuffle(items)
         guild_queue.queue = deque(items)
 
-    def clear(self, guild_id: int) -> None:
+    def clear(self, guild_id: int, *, preserve_filter: bool = True) -> None:
         guild_queue = self.get(guild_id)
         guild_queue.queue.clear()
         guild_queue.history.clear()
         guild_queue.current_track = None
-        guild_queue.active_filter_preset = "off"
-        guild_queue.active_audio_filter = None
+        if not preserve_filter:
+            guild_queue.active_filter_preset = "off"
+            guild_queue.active_audio_filter = None
         guild_queue.voice_channel_id = None
         guild_queue.text_channel_id = None
         guild_queue.now_playing_message_id = None
