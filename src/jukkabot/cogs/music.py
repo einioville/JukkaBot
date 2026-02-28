@@ -247,11 +247,10 @@ class MusicCog(commands.Cog):
         if image_url:
             embed.set_image(url=image_url)
 
-        controls = NowPlayingControls(self, guild.id)
         if edit_existing and state.now_playing_message_id:
             old_message = channel.get_partial_message(state.now_playing_message_id)
             try:
-                await old_message.edit(embed=embed, view=controls)
+                await old_message.edit(embed=embed)
                 return
             except (discord.NotFound, discord.Forbidden):
                 pass
@@ -263,6 +262,7 @@ class MusicCog(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 pass
 
+        controls = NowPlayingControls(self, guild.id)
         message = await channel.send(embed=embed, view=controls)
         state.now_playing_message_id = message.id
 
