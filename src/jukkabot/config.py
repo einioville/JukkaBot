@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 class Settings:
     token: str
     admin_user_ids: set[int]
+    tracker_api_key: str | None
 
 
 def load_settings() -> Settings:
@@ -26,4 +27,12 @@ def load_settings() -> Settings:
             if value:
                 admin_user_ids.add(int(value))
 
-    return Settings(token=token, admin_user_ids=admin_user_ids)
+    tracker_api_key = (
+        os.getenv("TRACKER_API_KEY", "").strip() or os.getenv("TRN_API_KEY", "").strip()
+    ) or None
+
+    return Settings(
+        token=token,
+        admin_user_ids=admin_user_ids,
+        tracker_api_key=tracker_api_key,
+    )

@@ -17,6 +17,7 @@ class MusicService:
     def __init__(self) -> None:
         self._ydl_options = {
             "quiet": True,
+            "no_warnings": True,
             "skip_download": True,
             "extract_flat": True,
             "default_search": "ytsearch5",
@@ -52,6 +53,7 @@ class MusicService:
     def get_stream_source(self, video_url: str) -> StreamSource:
         stream_options = {
             "quiet": True,
+            "no_warnings": True,
             "skip_download": True,
             "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
             "noplaylist": True,

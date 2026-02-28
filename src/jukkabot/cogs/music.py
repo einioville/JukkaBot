@@ -12,8 +12,14 @@ from discord.ext import commands, tasks
 from jukkabot.models import Track
 from jukkabot.music_service import MusicService
 from jukkabot.queue_manager import QueueManager
+from jukkabot.tracker_service import (
+    TRACKER_GAME_NAMES,
+    TrackerApiError,
+    TrackerService,
+)
 
 logger = logging.getLogger(__name__)
+TRACKER_STATS_ENABLED = False
 
 
 class NowPlayingControls(discord.ui.View):
@@ -102,11 +108,13 @@ class MusicCog(commands.Cog):
         bot: commands.Bot,
         queue_manager: QueueManager,
         music_service: MusicService,
+        tracker_service: TrackerService | None,
         admin_user_ids: set[int],
     ) -> None:
         self.bot = bot
         self.queue_manager = queue_manager
         self.music_service = music_service
+        self.tracker_service = tracker_service
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
         self._autocomplete_request_seq: dict[tuple[int, int], int] = {}
@@ -666,6 +674,27 @@ class MusicCog(commands.Cog):
         self._touch_activity(guild.id)
         await interaction.response.send_message(response)
 
+    @app_commands.command(name="clear", description="Clear queue and remove now-playing.")
+    async def clear(self, interaction: discord.Interaction) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        voice = guild.voice_client
+        state = self.queue_manager.get(guild.id)
+        if voice is not None and (voice.is_playing() or voice.is_paused()):
+            state.skip_requested = True
+            voice.stop()
+
+        await self._delete_now_playing_message(guild, interaction.channel_id)
+        self.queue_manager.clear(guild.id)
+        self._touch_activity(guild.id)
+        await interaction.response.send_message("Queue cleared and now-playing removed.")
+
     @app_commands.command(name="leave", description="Disconnect the bot from voice.")
     async def leave(self, interaction: discord.Interaction) -> None:
         is_allowed, _ = await self._validate_channel_access(interaction)
@@ -686,6 +715,102 @@ class MusicCog(commands.Cog):
         await voice.disconnect(force=True)
         await self._cleanup_after_disconnect(guild, interaction.channel_id)
         await interaction.response.send_message("Left the voice channel and cleared the queue.")
+
+    async def stats_game_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        del interaction
+        query = current.strip().casefold()
+        if query:
+            matches = [name for name in TRACKER_GAME_NAMES if query in name.casefold()]
+        else:
+            matches = list(TRACKER_GAME_NAMES)
+        return [app_commands.Choice(name=name, value=name) for name in matches[:25]]
+
+    @app_commands.command(
+        name="stats",
+        description="Fetch player stats from Tracker Network.",
+    )
+    @app_commands.autocomplete(game=stats_game_autocomplete)
+    async def stats(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        account_name: str,
+    ) -> None:
+        if not TRACKER_STATS_ENABLED:
+            await interaction.response.send_message(
+                "Stats feature is temporarily disabled until Tracker app approval.",
+                ephemeral=True,
+            )
+            return
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        if not account_name.strip():
+            await interaction.response.send_message(
+                "Account name is required.", ephemeral=True
+            )
+            return
+
+        selected_game = next(
+            (
+                name
+                for name in TRACKER_GAME_NAMES
+                if name.casefold() == game.strip().casefold()
+            ),
+            None,
+        )
+        if selected_game is None:
+            await interaction.response.send_message(
+                "Game must be selected from the supported Tracker list.",
+                ephemeral=True,
+            )
+            return
+        if self.tracker_service is None:
+            await interaction.response.send_message(
+                "Tracker API key is not configured.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+        try:
+            profile = await asyncio.to_thread(
+                self.tracker_service.fetch_profile_stats,
+                selected_game,
+                account_name,
+            )
+        except TrackerApiError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except Exception as exc:
+            logger.exception("Tracker stats lookup failed: %s", exc)
+            await interaction.followup.send(
+                "Failed to fetch stats from Tracker API.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"{profile.game_name} Stats",
+            description=f"Player: **{profile.platform_user}**  \nPlatform: **{profile.platform}**",
+            color=discord.Color(0x1DB954),
+        )
+        count = 0
+        for stat_name, stat_value in profile.stats.items():
+            embed.add_field(
+                name=str(stat_name)[:256],
+                value=str(stat_value)[:1024],
+                inline=True,
+            )
+            count += 1
+            if count >= 25:
+                break
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
     async def banuser(self, interaction: discord.Interaction, user: discord.Member) -> None:
@@ -741,5 +866,8 @@ class MusicCog(commands.Cog):
 async def setup(bot: commands.Bot) -> None:
     queue_manager = bot.queue_manager  # type: ignore[attr-defined]
     music_service = bot.music_service  # type: ignore[attr-defined]
+    tracker_service = bot.tracker_service  # type: ignore[attr-defined]
     admin_user_ids = bot.admin_user_ids  # type: ignore[attr-defined]
-    await bot.add_cog(MusicCog(bot, queue_manager, music_service, admin_user_ids))
+    await bot.add_cog(
+        MusicCog(bot, queue_manager, music_service, tracker_service, admin_user_ids)
+    )
