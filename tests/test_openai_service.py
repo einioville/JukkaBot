@@ -92,11 +92,38 @@ def test_generate_reply_falls_back_on_empty_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = OpenAIService(api_key="fake")
+    calls = 0
 
     def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
         return _FakeResponse({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}})
 
     monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
     reply = service.generate_reply([{"role": "user", "content": "Hi"}])
 
     assert reply == EMPTY_OUTPUT_FALLBACK_REPLY
+    assert calls == 2
+
+
+def test_generate_reply_recovers_after_max_tokens_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payload = json.loads(request.data.decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return _FakeResponse(
+                {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+            )
+        return _FakeResponse({"output_text": "Recovered after retry"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply([{"role": "user", "content": "Hi"}])
+
+    assert reply == "Recovered after retry"
+    assert payloads[0]["max_output_tokens"] == 220
+    assert payloads[1]["max_output_tokens"] == 440

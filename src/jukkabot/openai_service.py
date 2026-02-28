@@ -61,19 +61,33 @@ class OpenAIService:
             "max_output_tokens": self.max_output_tokens,
         }
         raw = self._request_with_adaptive_payload(base_payload, optional_payload)
-
-        try:
-            payload_data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise OpenAIServiceError("OpenAI API returned invalid JSON.") from exc
-        if not isinstance(payload_data, dict):
-            raise OpenAIServiceError("Unexpected OpenAI response shape.")
+        payload_data = self._parse_response_payload(raw)
 
         output = self._extract_output_text(payload_data)
         if output:
             return output
 
         reason = self._extract_non_text_reason(payload_data)
+        if reason == "incomplete:max_output_tokens":
+            retry_tokens = min(max(self.max_output_tokens * 2, self.max_output_tokens + 64), 1024)
+            if retry_tokens > self.max_output_tokens:
+                logger.warning(
+                    "Model %s hit max_output_tokens=%s with non-text output; "
+                    "retrying with max_output_tokens=%s.",
+                    self.model,
+                    self.max_output_tokens,
+                    retry_tokens,
+                )
+                retry_raw = self._request_with_adaptive_payload(
+                    base_payload,
+                    {"max_output_tokens": retry_tokens},
+                )
+                retry_payload = self._parse_response_payload(retry_raw)
+                retry_output = self._extract_output_text(retry_payload)
+                if retry_output:
+                    return retry_output
+                reason = self._extract_non_text_reason(retry_payload) or reason
+
         if reason:
             logger.warning(
                 "OpenAI API returned non-text output for model %s: %s",
@@ -83,6 +97,15 @@ class OpenAIService:
         else:
             logger.warning("OpenAI API returned empty output for model %s", self.model)
         return EMPTY_OUTPUT_FALLBACK_REPLY
+
+    def _parse_response_payload(self, raw: str) -> dict[str, Any]:
+        try:
+            payload_data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OpenAIServiceError("OpenAI API returned invalid JSON.") from exc
+        if not isinstance(payload_data, dict):
+            raise OpenAIServiceError("Unexpected OpenAI response shape.")
+        return payload_data
 
     def _request_with_adaptive_payload(
         self,
