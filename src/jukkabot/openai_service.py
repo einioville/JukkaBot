@@ -10,6 +10,12 @@ class OpenAIServiceError(RuntimeError):
     pass
 
 
+DEFAULT_CHAT_SYSTEM_PROMPT = (
+    "You are JukkaBot, a natural and friendly Discord chat participant. "
+    "Keep responses concise and conversational."
+)
+
+
 class OpenAIService:
     def __init__(
         self,
@@ -22,11 +28,7 @@ class OpenAIService:
     ) -> None:
         self.api_key = api_key
         self.model = model
-        self.system_prompt = (
-            system_prompt
-            or "You are JukkaBot, a natural and friendly Discord chat participant. "
-            "Keep responses concise and conversational."
-        )
+        self.system_prompt = system_prompt or DEFAULT_CHAT_SYSTEM_PROMPT
         self.temperature = max(0.0, min(2.0, float(temperature)))
         self.max_output_tokens = max(1, int(max_output_tokens))
         self.timeout_seconds = max(1, int(timeout_seconds))

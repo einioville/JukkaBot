@@ -13,7 +13,6 @@ class Settings:
     tracker_api_key: str | None
     openai_api_key: str | None
     openai_model: str
-    chat_system_prompt: str
     chat_temperature: float
     chat_max_output_tokens: int
     chat_idle_timeout_seconds: int
@@ -62,11 +61,6 @@ def load_settings() -> Settings:
     ) or None
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
     openai_model = os.getenv("OPENAI_MODEL", "").strip() or "gpt-4.1-mini"
-    chat_system_prompt = (
-        os.getenv("CHAT_SYSTEM_PROMPT", "").strip()
-        or "You are JukkaBot, a natural and friendly Discord chat participant. "
-        "Keep responses concise and conversational."
-    )
     chat_temperature = _env_float("CHAT_TEMPERATURE", 0.8, 0.0, 2.0)
     chat_max_output_tokens = _env_int("CHAT_MAX_OUTPUT_TOKENS", 220, minimum=1)
     chat_idle_timeout_seconds = _env_int("CHAT_IDLE_TIMEOUT_SECONDS", 300, minimum=60)
@@ -77,7 +71,6 @@ def load_settings() -> Settings:
         tracker_api_key=tracker_api_key,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
-        chat_system_prompt=chat_system_prompt,
         chat_temperature=chat_temperature,
         chat_max_output_tokens=chat_max_output_tokens,
         chat_idle_timeout_seconds=chat_idle_timeout_seconds,

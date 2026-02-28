@@ -67,7 +67,6 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
    - `ADMIN_USER_IDS` (optional, comma-separated user IDs)
    - `OPENAI_API_KEY` (required for `/chat on`)
    - `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
-   - `CHAT_SYSTEM_PROMPT` (optional, controls bot speaking style)
    - `CHAT_TEMPERATURE` (optional, default `0.8`)
    - `CHAT_MAX_OUTPUT_TOKENS` (optional, default `220`)
    - `CHAT_IDLE_TIMEOUT_SECONDS` (optional, default `300`)
@@ -90,3 +89,13 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - `/stats` is intentionally disabled in code (`TRACKER_STATS_ENABLED = False`) until Tracker approves API access for the app.
 - If slash commands do not appear, confirm bot invite has `applications.commands` scope and wait for Discord command propagation after restart/sync.
 - Chat mode requires Discord Message Content Intent in the developer portal for full channel message processing.
+- Chat system prompt is stored in `config.json` under `chat.system_prompt`.
+
+### Chat Prompt Config
+```json
+{
+  "chat": {
+    "system_prompt": "You are JukkaBot, friendly and natural. Keep replies concise."
+  }
+}
+```

@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from jukkabot.config import Settings, load_settings
 from jukkabot.music_service import MusicService
-from jukkabot.openai_service import OpenAIService
+from jukkabot.openai_service import DEFAULT_CHAT_SYSTEM_PROMPT, OpenAIService
 from jukkabot.queue_manager import QueueManager
 from jukkabot.tracker_service import TrackerService
 
@@ -33,20 +33,21 @@ class JukkaBot(commands.Bot):
             if settings.tracker_api_key
             else None
         )
+        self.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
+        self.config_path = Path(__file__).resolve().parents[2] / "config.json"
+        self._load_persistent_config()
         self.openai_service = (
             OpenAIService(
                 api_key=settings.openai_api_key,
                 model=settings.openai_model,
-                system_prompt=settings.chat_system_prompt,
+                system_prompt=self.chat_system_prompt,
                 temperature=settings.chat_temperature,
                 max_output_tokens=settings.chat_max_output_tokens,
             )
             if settings.openai_api_key
             else None
         )
-        self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
-        self.config_path = Path(__file__).resolve().parents[2] / "config.json"
-        self._load_persistent_config()
 
     def _load_persistent_config(self) -> None:
         if not self.config_path.exists():
@@ -59,12 +60,24 @@ class JukkaBot(commands.Bot):
 
         if not isinstance(payload, dict):
             return
+        chat = payload.get("chat")
+        if isinstance(chat, dict):
+            system_prompt = chat.get("system_prompt")
+            if isinstance(system_prompt, str) and system_prompt.strip():
+                self.chat_system_prompt = system_prompt.strip()
         guilds = payload.get("guilds")
         if isinstance(guilds, dict):
             self.queue_manager.load_persistent_state(guilds)
 
     def _save_persistent_config(self) -> None:
+        if self.openai_service is not None:
+            self.chat_system_prompt = (
+                self.openai_service.system_prompt.strip() or DEFAULT_CHAT_SYSTEM_PROMPT
+            )
         payload = {
+            "chat": {
+                "system_prompt": self.chat_system_prompt,
+            },
             "guilds": self.queue_manager.to_persistent_state(),
         }
         temp_path = self.config_path.with_suffix(".json.tmp")

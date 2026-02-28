@@ -62,10 +62,11 @@
 - Configure via `.env`:
   - `OPENAI_API_KEY`
   - `OPENAI_MODEL`
-  - `CHAT_SYSTEM_PROMPT`
   - `CHAT_TEMPERATURE`
   - `CHAT_MAX_OUTPUT_TOKENS`
   - `CHAT_IDLE_TIMEOUT_SECONDS`
+- Configure prompt via `config.json`:
+  - `chat.system_prompt`
 
 # Architecture
 - Code lives under `src/`.
