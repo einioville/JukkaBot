@@ -63,3 +63,6 @@
 - Organize things into different files
   - For example queue system, currently playing generator etc. to different files.
 - I will fix the structure later and you can update this
+
+# Other instructions
+- Always commit the changes you made

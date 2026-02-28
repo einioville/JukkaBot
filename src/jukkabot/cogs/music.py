@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -20,6 +21,25 @@ from jukkabot.tracker_service import (
 
 logger = logging.getLogger(__name__)
 TRACKER_STATS_ENABLED = False
+
+FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
+    "off": ("Off", None),
+    "bassboost": ("Bass Boost", "bass=g=10:f=110:w=0.8"),
+    "hiphop": ("Hip Hop", "bass=g=8:f=95:w=0.8,treble=g=2:f=3500:w=0.7"),
+    "edm": ("EDM", "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"),
+    "dance": (
+        "Dance",
+        "bass=g=6:f=120:w=0.8,equalizer=f=1000:t=q:w=1:g=2,treble=g=3:f=5000:w=0.6",
+    ),
+    "vocal": (
+        "Vocal",
+        "highpass=f=120,lowpass=f=12000,equalizer=f=2500:t=q:w=1.2:g=4,"
+        "equalizer=f=5500:t=q:w=1.4:g=3",
+    ),
+    "pop": ("Pop", "bass=g=4:f=120:w=0.7,treble=g=3:f=4500:w=0.6"),
+    "rock": ("Rock", "bass=g=5:f=120:w=0.7,treble=g=4:f=5000:w=0.7"),
+    "trebleboost": ("Treble Boost", "treble=g=6:f=5000:w=0.8"),
+}
 
 
 class NowPlayingControls(discord.ui.View):
@@ -101,6 +121,14 @@ class NowPlayingControls(discord.ui.View):
             )
         self.cog._touch_activity(guild.id)
 
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.secondary)
+    async def stop_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        guild = await self._validate(interaction)
+        if guild is None:
+            return
+        await self.cog._leave_voice(guild, interaction.channel_id)
+
 
 class MusicCog(commands.Cog):
     def __init__(
@@ -118,6 +146,10 @@ class MusicCog(commands.Cog):
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
         self._autocomplete_request_seq: dict[tuple[int, int], int] = {}
+        self._playback_started_at: dict[int, float] = {}
+        self._paused_started_at: dict[int, float] = {}
+        self._paused_accumulated_seconds: dict[int, float] = {}
+        self._pending_seek_seconds: dict[int, float] = {}
         self.idle_disconnect.start()
 
     def cog_unload(self) -> None:
@@ -126,9 +158,85 @@ class MusicCog(commands.Cog):
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
 
+    async def _ack_silent(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+    async def _finalize_silent(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.delete_original_response()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    def _set_filter_preset(self, guild_id: int, preset_key: str) -> bool:
+        preset = FILTER_PRESETS.get(preset_key)
+        if preset is None:
+            return False
+        state = self.queue_manager.get(guild_id)
+        state.active_filter_preset = preset_key
+        state.active_audio_filter = preset[1]
+        return True
+
+    def _set_playback_clock(self, guild_id: int, initial_elapsed_seconds: float = 0.0) -> None:
+        elapsed = max(0.0, initial_elapsed_seconds)
+        self._playback_started_at[guild_id] = time.monotonic() - elapsed
+        self._paused_started_at.pop(guild_id, None)
+        self._paused_accumulated_seconds[guild_id] = 0.0
+
+    def _clear_playback_clock(self, guild_id: int) -> None:
+        self._playback_started_at.pop(guild_id, None)
+        self._paused_started_at.pop(guild_id, None)
+        self._paused_accumulated_seconds.pop(guild_id, None)
+        self._pending_seek_seconds.pop(guild_id, None)
+
+    def _mark_paused(self, guild_id: int) -> None:
+        if guild_id in self._playback_started_at and guild_id not in self._paused_started_at:
+            self._paused_started_at[guild_id] = time.monotonic()
+
+    def _mark_resumed(self, guild_id: int) -> None:
+        paused_started = self._paused_started_at.pop(guild_id, None)
+        if paused_started is None:
+            return
+        self._paused_accumulated_seconds[guild_id] = (
+            self._paused_accumulated_seconds.get(guild_id, 0.0)
+            + (time.monotonic() - paused_started)
+        )
+
+    def _current_elapsed_seconds(self, guild_id: int) -> float:
+        started_at = self._playback_started_at.get(guild_id)
+        if started_at is None:
+            return 0.0
+        paused_total = self._paused_accumulated_seconds.get(guild_id, 0.0)
+        paused_started = self._paused_started_at.get(guild_id)
+        if paused_started is not None:
+            paused_total += time.monotonic() - paused_started
+        return max(0.0, time.monotonic() - started_at - paused_total)
+
+    async def _restart_current_with_active_filter(self, guild: discord.Guild) -> None:
+        state = self.queue_manager.get(guild.id)
+        voice = guild.voice_client
+        if state.current_track is None or voice is None:
+            return
+
+        elapsed = self._current_elapsed_seconds(guild.id)
+        if elapsed > 0.5:
+            self._pending_seek_seconds[guild.id] = elapsed
+        else:
+            self._pending_seek_seconds.pop(guild.id, None)
+        state.queue.appendleft(state.current_track)
+        state.skip_requested = True
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()
+            return
+
+        self.queue_manager.finish_current(guild.id, add_to_history=False)
+        state.skip_requested = False
+        await self._play_next(guild)
+
     def _clear_guild_voice_state(self, guild_id: int) -> None:
         self.queue_manager.clear(guild_id)
         self.last_active_by_guild.pop(guild_id, None)
+        self._clear_playback_clock(guild_id)
 
     async def _delete_now_playing_message(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
@@ -155,6 +263,16 @@ class MusicCog(commands.Cog):
     ) -> None:
         await self._delete_now_playing_message(guild, fallback_channel_id)
         self._clear_guild_voice_state(guild.id)
+
+    async def _leave_voice(
+        self, guild: discord.Guild, fallback_channel_id: int | None = None
+    ) -> bool:
+        voice = guild.voice_client
+        if voice is None:
+            return False
+        await voice.disconnect(force=True)
+        await self._cleanup_after_disconnect(guild, fallback_channel_id)
+        return True
 
     def _youtube_thumbnail(self, track: Track) -> str | None:
         if track.thumbnail_url:
@@ -332,9 +450,11 @@ class MusicCog(commands.Cog):
             return "Bot is not connected to voice."
         if voice.is_playing():
             voice.pause()
+            self._mark_paused(guild.id)
             return "Paused."
         if voice.is_paused():
             voice.resume()
+            self._mark_resumed(guild.id)
             return "Resumed."
         return "Nothing is currently playing."
 
@@ -352,6 +472,12 @@ class MusicCog(commands.Cog):
             "-reconnect_delay_max 5"
         )
         ffmpeg_options = "-vn -loglevel warning"
+        state = self.queue_manager.get(guild.id)
+        if state.active_audio_filter:
+            ffmpeg_options = f'{ffmpeg_options} -af "{state.active_audio_filter}"'
+        seek_seconds = max(0.0, self._pending_seek_seconds.pop(guild.id, 0.0))
+        if seek_seconds > 0.0:
+            ffmpeg_before = f"-ss {seek_seconds:.3f} {ffmpeg_before}"
         if stream.user_agent:
             ffmpeg_before = f'{ffmpeg_before} -user_agent "{stream.user_agent}"'
         source = discord.FFmpegPCMAudio(
@@ -370,6 +496,7 @@ class MusicCog(commands.Cog):
                 logger.exception("Failed to process playback callback for guild %s", guild.id)
 
         voice.play(source, after=after_playback)
+        self._set_playback_clock(guild.id, initial_elapsed_seconds=seek_seconds)
         self._touch_activity(guild.id)
         await self._send_now_playing(guild, announce_channel, track)
 
@@ -385,6 +512,9 @@ class MusicCog(commands.Cog):
         state = self.queue_manager.get(guild_id)
         self.queue_manager.finish_current(guild_id, add_to_history=not state.skip_requested)
         state.skip_requested = False
+        self._playback_started_at.pop(guild_id, None)
+        self._paused_started_at.pop(guild_id, None)
+        self._paused_accumulated_seconds.pop(guild_id, None)
 
         await self._play_next(guild)
 
@@ -494,7 +624,8 @@ class MusicCog(commands.Cog):
 
         bot_voice = guild.voice_client
         if bot_voice and bot_voice.channel.id == user_channel.id:
-            await interaction.response.send_message("Already in your voice channel.")
+            await self._ack_silent(interaction)
+            await self._finalize_silent(interaction)
             return
 
         if bot_voice and bot_voice.channel.id != user_channel.id:
@@ -505,25 +636,25 @@ class MusicCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
+            await self._ack_silent(interaction)
             await bot_voice.move_to(user_channel)
             self.queue_manager.set_voice_channel(guild.id, user_channel.id)
             self._touch_activity(guild.id)
-            await interaction.response.send_message(
-                f"Moved to {user_channel.mention} (previous channel was empty)."
-            )
+            await self._finalize_silent(interaction)
             return
 
         try:
+            await self._ack_silent(interaction)
             await user_channel.connect()
         except discord.DiscordException as exc:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Could not join voice channel: {exc}", ephemeral=True
             )
             return
 
         self.queue_manager.set_voice_channel(guild.id, user_channel.id)
         self._touch_activity(guild.id)
-        await interaction.response.send_message(f"Joined {user_channel.mention}.")
+        await self._finalize_silent(interaction)
 
     async def play_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -561,6 +692,71 @@ class MusicCog(commands.Cog):
                 break
         return choices
 
+    async def filter_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        del interaction
+        query = current.strip().casefold()
+        choices: list[app_commands.Choice[str]] = []
+        for key, (label, _) in FILTER_PRESETS.items():
+            if query and query not in key and query not in label.casefold():
+                continue
+            choices.append(app_commands.Choice(name=label, value=key))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    @app_commands.command(name="filter", description="Apply an audio filter preset.")
+    @app_commands.autocomplete(preset=filter_autocomplete)
+    async def filter(self, interaction: discord.Interaction, preset: str) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        preset_key = preset.strip().casefold()
+        if preset_key not in FILTER_PRESETS:
+            await interaction.response.send_message(
+                "Invalid filter preset.", ephemeral=True
+            )
+            return
+
+        await self._ack_silent(interaction)
+        self._set_filter_preset(guild.id, preset_key)
+        self._touch_activity(guild.id)
+        await self._restart_current_with_active_filter(guild)
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._finalize_silent(interaction)
+
+    @app_commands.command(name="bass", description="Apply bass boost filter.")
+    async def bass(
+        self,
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 0, 20] = 10,
+    ) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        await self._ack_silent(interaction)
+        state = self.queue_manager.get(guild.id)
+        state.active_filter_preset = f"bass({level})"
+        if level <= 0:
+            state.active_audio_filter = None
+        else:
+            state.active_audio_filter = f"bass=g={int(level)}:f=110:w=0.8"
+        self._touch_activity(guild.id)
+        await self._restart_current_with_active_filter(guild)
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._finalize_silent(interaction)
+
     @app_commands.command(name="play", description="Search and queue a track.")
     @app_commands.autocomplete(query=play_autocomplete)
     async def play(self, interaction: discord.Interaction, query: str) -> None:
@@ -585,7 +781,7 @@ class MusicCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(thinking=True)
+        await self._ack_silent(interaction)
         if interaction.channel_id is not None:
             self.queue_manager.set_text_channel(guild.id, interaction.channel_id)
 
@@ -623,13 +819,13 @@ class MusicCog(commands.Cog):
             requested_by_display_name=requester_name,
         )
         self._touch_activity(guild.id)
-        await interaction.followup.send(f"Queued: **{track.title}**")
-
-        if state.current_track is not None:
-            announce_channel = self._resolve_announce_channel(guild, interaction.channel_id)
-            await self._send_now_playing(guild, announce_channel, state.current_track)
-
-        await self._start_if_needed(guild, interaction.channel_id)
+        if state.current_track is None:
+            await self._start_if_needed(guild, interaction.channel_id)
+        else:
+            await self._refresh_now_playing(
+                guild, interaction.channel_id, edit_existing=True
+            )
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="skip", description="Skip the current track.")
     async def skip(self, interaction: discord.Interaction) -> None:
@@ -652,12 +848,13 @@ class MusicCog(commands.Cog):
             await interaction.response.send_message("Nothing is currently playing.")
             return
 
+        await self._ack_silent(interaction)
         skipped = await self._skip_track(guild)
         self._touch_activity(guild.id)
-        if skipped:
-            await interaction.response.send_message("Skipped.")
+        if not skipped:
+            await interaction.followup.send("Nothing is currently playing.", ephemeral=True)
             return
-        await interaction.response.send_message("Nothing is currently playing.")
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="pause", description="Pause or resume playback.")
     async def pause(self, interaction: discord.Interaction) -> None:
@@ -669,10 +866,11 @@ class MusicCog(commands.Cog):
         if guild is None:
             return
 
-        response = await self._toggle_pause(guild)
+        await self._ack_silent(interaction)
+        await self._toggle_pause(guild)
         await self._refresh_now_playing(guild, interaction.channel_id)
         self._touch_activity(guild.id)
-        await interaction.response.send_message(response)
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="clear", description="Clear queue and remove now-playing.")
     async def clear(self, interaction: discord.Interaction) -> None:
@@ -684,6 +882,7 @@ class MusicCog(commands.Cog):
         if guild is None:
             return
 
+        await self._ack_silent(interaction)
         voice = guild.voice_client
         state = self.queue_manager.get(guild.id)
         if voice is not None and (voice.is_playing() or voice.is_paused()):
@@ -693,7 +892,7 @@ class MusicCog(commands.Cog):
         await self._delete_now_playing_message(guild, interaction.channel_id)
         self.queue_manager.clear(guild.id)
         self._touch_activity(guild.id)
-        await interaction.response.send_message("Queue cleared and now-playing removed.")
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="leave", description="Disconnect the bot from voice.")
     async def leave(self, interaction: discord.Interaction) -> None:
@@ -705,16 +904,13 @@ class MusicCog(commands.Cog):
         if guild is None:
             return
 
-        voice = guild.voice_client
-        if voice is None:
-            await interaction.response.send_message(
+        await self._ack_silent(interaction)
+        if not await self._leave_voice(guild, interaction.channel_id):
+            await interaction.followup.send(
                 "I am not connected to a voice channel.", ephemeral=True
             )
             return
-
-        await voice.disconnect(force=True)
-        await self._cleanup_after_disconnect(guild, interaction.channel_id)
-        await interaction.response.send_message("Left the voice channel and cleared the queue.")
+        await self._finalize_silent(interaction)
 
     async def stats_game_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -832,11 +1028,10 @@ class MusicCog(commands.Cog):
             )
             return
 
+        await self._ack_silent(interaction)
         state = self.queue_manager.get(guild.id)
         state.banned_user_ids.add(user.id)
-        await interaction.response.send_message(
-            f"{user.mention} is now banned from queueing/skipping."
-        )
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="unbanuser", description="Unban a user from queue and skip.")
     async def unbanuser(self, interaction: discord.Interaction, user: discord.Member) -> None:
@@ -858,9 +1053,10 @@ class MusicCog(commands.Cog):
             )
             return
 
+        await self._ack_silent(interaction)
         state = self.queue_manager.get(guild.id)
         state.banned_user_ids.discard(user.id)
-        await interaction.response.send_message(f"{user.mention} is now unbanned.")
+        await self._finalize_silent(interaction)
 
 
 async def setup(bot: commands.Bot) -> None:

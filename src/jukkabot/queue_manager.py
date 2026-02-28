@@ -13,6 +13,8 @@ class GuildQueue:
     history: deque[Track] = field(default_factory=lambda: deque(maxlen=50))
     banned_user_ids: set[int] = field(default_factory=set)
     current_track: Track | None = None
+    active_filter_preset: str = "off"
+    active_audio_filter: str | None = None
     voice_channel_id: int | None = None
     text_channel_id: int | None = None
     now_playing_message_id: int | None = None
@@ -94,7 +96,49 @@ class QueueManager:
         guild_queue.queue.clear()
         guild_queue.history.clear()
         guild_queue.current_track = None
+        guild_queue.active_filter_preset = "off"
+        guild_queue.active_audio_filter = None
         guild_queue.voice_channel_id = None
         guild_queue.text_channel_id = None
         guild_queue.now_playing_message_id = None
         guild_queue.skip_requested = False
+
+    def to_persistent_state(self) -> dict[str, dict[str, object]]:
+        state: dict[str, dict[str, object]] = {}
+        for guild_id, guild_queue in self._guild_queues.items():
+            state[str(guild_id)] = {
+                "banned_user_ids": sorted(guild_queue.banned_user_ids),
+                "equalizer_preset": guild_queue.active_filter_preset,
+                "equalizer_filter": guild_queue.active_audio_filter,
+            }
+        return state
+
+    def load_persistent_state(self, data: dict[str, object]) -> None:
+        for guild_id_str, guild_data in data.items():
+            try:
+                guild_id = int(guild_id_str)
+            except ValueError:
+                continue
+            if not isinstance(guild_data, dict):
+                continue
+
+            guild_queue = self.get(guild_id)
+            raw_banned = guild_data.get("banned_user_ids", [])
+            if isinstance(raw_banned, list):
+                guild_queue.banned_user_ids = {
+                    int(user_id)
+                    for user_id in raw_banned
+                    if isinstance(user_id, int) or (isinstance(user_id, str) and user_id.isdigit())
+                }
+
+            preset = guild_data.get("equalizer_preset", "off")
+            if isinstance(preset, str):
+                guild_queue.active_filter_preset = preset
+            else:
+                guild_queue.active_filter_preset = "off"
+
+            audio_filter = guild_data.get("equalizer_filter")
+            if isinstance(audio_filter, str) or audio_filter is None:
+                guild_queue.active_audio_filter = audio_filter
+            else:
+                guild_queue.active_audio_filter = None

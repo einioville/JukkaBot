@@ -8,6 +8,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/play`: search and queue a track
   - `/skip`: skip current track
   - `/pause`: pause/resume playback
+  - `/filter`: apply audio filter preset (autocomplete)
+  - `/bass`: apply bass boost filter with level control (`0..20`)
   - `/clear`: clear queue and delete now-playing message
   - `/leave`: disconnect and clear queue
   - `/banuser`: ban user from queueing/skipping
@@ -22,6 +24,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
   - previous, next, pause/resume, shuffle
+- Audio filter presets available:
+  - off, bassboost, hiphop, edm, dance, vocal, pop, rock, trebleboost
 - Queue and now-playing cleanup when bot leaves or gets disconnected.
 - Auto-disconnect after 5 minutes of idle playback state (not playing, not paused, no current track, empty queue).
 
