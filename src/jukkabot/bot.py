@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Iterable
 
 import discord
 from discord.ext import commands
@@ -16,6 +17,9 @@ from jukkabot.tracker_service import TrackerService
 
 logging.basicConfig(level=logging.INFO)
 DEFAULT_CHAT_PROMPT_FILE = "resources/prompts/ragebait_chat_prompt.txt"
+DYNAMIC_MEMORY_SECTION_HEADER = "[Dynaaminen muisti]"
+EMPTY_DYNAMIC_MEMORY_LINE = "- Ei tallennettuja faktoja."
+MAX_DYNAMIC_MEMORY_CHARS = 5000
 
 
 class JukkaBot(commands.Bot):
@@ -40,18 +44,16 @@ class JukkaBot(commands.Bot):
         self.chat_user_names_by_guild: dict[int, dict[int, str]] = {}
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
+        self.openai_service: OpenAIService | None = None
         self._load_persistent_config()
-        self.openai_service = (
-            OpenAIService(
+        if settings.openai_api_key:
+            self.openai_service = OpenAIService(
                 api_key=settings.openai_api_key,
                 model=settings.openai_model,
                 system_prompt=self.chat_system_prompt,
                 temperature=settings.chat_temperature,
                 max_output_tokens=settings.chat_max_output_tokens,
             )
-            if settings.openai_api_key
-            else None
-        )
 
     def _load_persistent_config(self) -> None:
         if not self.config_path.exists():
@@ -72,6 +74,7 @@ class JukkaBot(commands.Bot):
             self._load_chat_user_facts(chat.get("user_facts"))
 
         if self.chat_system_prompt_file:
+            self._sync_dynamic_memory_to_prompt_file()
             prompt_text = self._load_chat_prompt_from_project_file(self.chat_system_prompt_file)
             if prompt_text:
                 self.chat_system_prompt = prompt_text
@@ -145,6 +148,7 @@ class JukkaBot(commands.Bot):
         if cleaned_name:
             guild_names = self.chat_user_names_by_guild.setdefault(guild_id, {})
             guild_names[user_id] = cleaned_name
+        self._sync_dynamic_memory_to_prompt_file()
         return True
 
     def get_chat_user_facts(self, guild_id: int) -> dict[int, list[str]]:
@@ -154,7 +158,7 @@ class JukkaBot(commands.Bot):
     def get_chat_user_display_name(self, guild_id: int, user_id: int) -> str | None:
         return self.chat_user_names_by_guild.get(guild_id, {}).get(user_id)
 
-    def _load_chat_prompt_from_project_file(self, path_value: str) -> str | None:
+    def _resolve_chat_prompt_file_path(self, path_value: str) -> Path | None:
         relative_path = Path(path_value)
         if relative_path.is_absolute():
             logging.warning("Ignoring absolute chat.system_prompt_file path: %s", path_value)
@@ -166,6 +170,12 @@ class JukkaBot(commands.Bot):
         except ValueError:
             logging.warning("Ignoring chat.system_prompt_file outside project root: %s", path_value)
             return None
+        return candidate
+
+    def _load_chat_prompt_from_project_file(self, path_value: str) -> str | None:
+        candidate = self._resolve_chat_prompt_file_path(path_value)
+        if candidate is None:
+            return None
         if not candidate.exists() or not candidate.is_file():
             logging.warning("Chat prompt file does not exist: %s", candidate)
             return None
@@ -176,7 +186,121 @@ class JukkaBot(commands.Bot):
             return None
         return text or None
 
+    def _render_dynamic_memory_lines(self) -> list[str]:
+        lines: list[str] = []
+        for guild_id in sorted(self.chat_user_facts_by_guild.keys()):
+            facts_by_user = self.chat_user_facts_by_guild[guild_id]
+            if not facts_by_user:
+                continue
+            lines.append(f"- Guild {guild_id}:")
+            names = self.chat_user_names_by_guild.get(guild_id, {})
+            for user_id in sorted(facts_by_user.keys()):
+                facts = facts_by_user[user_id]
+                if not facts:
+                    continue
+                display_name = names.get(user_id) or f"user-{user_id}"
+                fact_text = "; ".join(facts)
+                if len(fact_text) > 300:
+                    fact_text = f"{fact_text[:297]}..."
+                lines.append(f"  - {display_name}: {fact_text}")
+        if not lines:
+            return [EMPTY_DYNAMIC_MEMORY_LINE]
+
+        limited_lines: list[str] = []
+        total = 0
+        for line in lines:
+            total += len(line) + 1
+            if total > MAX_DYNAMIC_MEMORY_CHARS:
+                limited_lines.append("  - ...")
+                break
+            limited_lines.append(line)
+        return limited_lines or [EMPTY_DYNAMIC_MEMORY_LINE]
+
+    def _has_chat_user_facts(self) -> bool:
+        for guild_facts in self.chat_user_facts_by_guild.values():
+            for facts in guild_facts.values():
+                if facts:
+                    return True
+        return False
+
+    def _replace_prompt_section(
+        self,
+        prompt_text: str,
+        section_header: str,
+        replacement_lines: Iterable[str],
+    ) -> str:
+        lines = prompt_text.splitlines()
+        replacement = list(replacement_lines)
+        if not replacement:
+            replacement = [EMPTY_DYNAMIC_MEMORY_LINE]
+
+        header_index: int | None = None
+        header_key = section_header.casefold()
+        for index, line in enumerate(lines):
+            if line.strip().casefold() == header_key:
+                header_index = index
+                break
+
+        if header_index is None:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(section_header)
+            lines.extend(replacement)
+            return f"{'\n'.join(lines).rstrip()}\n"
+
+        section_start = header_index + 1
+        section_end = len(lines)
+        for index in range(section_start, len(lines)):
+            stripped = lines[index].strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section_end = index
+                break
+
+        updated = lines[:section_start] + replacement + lines[section_end:]
+        return f"{'\n'.join(updated).rstrip()}\n"
+
+    def _sync_dynamic_memory_to_prompt_file(self) -> None:
+        prompt_file = getattr(self, "chat_system_prompt_file", None)
+        if not isinstance(prompt_file, str) or not prompt_file.strip():
+            return
+        if not hasattr(self, "config_path"):
+            return
+        candidate = self._resolve_chat_prompt_file_path(prompt_file)
+        if candidate is None or not candidate.exists() or not candidate.is_file():
+            return
+
+        try:
+            current_text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            logging.exception("Failed reading chat prompt file for memory sync: %s", candidate)
+            return
+
+        has_dynamic_memory_section = any(
+            line.strip().casefold() == DYNAMIC_MEMORY_SECTION_HEADER.casefold()
+            for line in current_text.splitlines()
+        )
+        if has_dynamic_memory_section or self._has_chat_user_facts():
+            updated_text = self._replace_prompt_section(
+                current_text,
+                DYNAMIC_MEMORY_SECTION_HEADER,
+                self._render_dynamic_memory_lines(),
+            )
+        else:
+            updated_text = current_text
+        if updated_text != current_text:
+            try:
+                candidate.write_text(updated_text, encoding="utf-8")
+            except OSError:
+                logging.exception("Failed writing chat prompt file memory section: %s", candidate)
+                return
+
+        self.chat_system_prompt = updated_text.strip() or DEFAULT_CHAT_SYSTEM_PROMPT
+        openai_service = getattr(self, "openai_service", None)
+        if openai_service is not None:
+            openai_service.system_prompt = self.chat_system_prompt
+
     def _save_persistent_config(self) -> None:
+        self._sync_dynamic_memory_to_prompt_file()
         if self.openai_service is not None:
             self.chat_system_prompt = (
                 self.openai_service.system_prompt.strip() or DEFAULT_CHAT_SYSTEM_PROMPT

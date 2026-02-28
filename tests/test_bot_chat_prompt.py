@@ -119,3 +119,58 @@ def test_load_config_uses_default_prompt_file_when_not_explicit() -> None:
         assert bot.chat_system_prompt == "rage prompt from file"
     finally:
         shutil.rmtree(test_root, ignore_errors=True)
+
+
+def test_sync_dynamic_memory_updates_prompt_section() -> None:
+    test_root = Path(".tmp_test_prompt") / f"case_{uuid4().hex}"
+    try:
+        bot = JukkaBot.__new__(JukkaBot)
+        bot.config_path = test_root / "config.json"
+        bot.chat_system_prompt_file = DEFAULT_CHAT_PROMPT_FILE
+        bot.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        bot.chat_user_facts_by_guild = {1: {10: ["likes fortnite"]}}
+        bot.chat_user_names_by_guild = {1: {10: "ville"}}
+        bot.openai_service = None
+
+        prompt_path = test_root / DEFAULT_CHAT_PROMPT_FILE
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(
+            "base prompt\n\n[Dynaaminen muisti]\n- old value\n\n[Other]\nkeep",
+            encoding="utf-8",
+        )
+
+        bot._sync_dynamic_memory_to_prompt_file()
+
+        updated = prompt_path.read_text(encoding="utf-8")
+        assert "- old value" not in updated
+        assert "- Guild 1:" in updated
+        assert "ville: likes fortnite" in updated
+        assert "[Other]\nkeep" in updated
+        assert "ville: likes fortnite" in bot.chat_system_prompt
+    finally:
+        shutil.rmtree(test_root, ignore_errors=True)
+
+
+def test_sync_dynamic_memory_appends_section_when_missing_and_facts_exist() -> None:
+    test_root = Path(".tmp_test_prompt") / f"case_{uuid4().hex}"
+    try:
+        bot = JukkaBot.__new__(JukkaBot)
+        bot.config_path = test_root / "config.json"
+        bot.chat_system_prompt_file = DEFAULT_CHAT_PROMPT_FILE
+        bot.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        bot.chat_user_facts_by_guild = {1: {10: ["likes fortnite"]}}
+        bot.chat_user_names_by_guild = {1: {10: "ville"}}
+        bot.openai_service = None
+
+        prompt_path = test_root / DEFAULT_CHAT_PROMPT_FILE
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text("base prompt", encoding="utf-8")
+
+        bot._sync_dynamic_memory_to_prompt_file()
+
+        updated = prompt_path.read_text(encoding="utf-8")
+        assert "[Dynaaminen muisti]" in updated
+        assert "ville: likes fortnite" in updated
+        assert updated.startswith("base prompt")
+    finally:
+        shutil.rmtree(test_root, ignore_errors=True)
