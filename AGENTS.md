@@ -18,11 +18,11 @@
 - `/pause`: toggle pause/resume.
 - `/clear`: clear queue/history/current track and delete now-playing message.
 - `/leave`: disconnect from voice and clear queue/history/current state.
-- `/chat`: chat mode for current channel (`on`, `off`, `status`).
+- `/chat`: chat mode for current channel (`on`, `off`).
   - One active chat channel per guild.
   - Auto-disable after 5 minutes of quiet.
   - Uses message text and supported text attachments as context.
-  - Decides dynamically when to reply without requiring mention.
+  - Replies only when the bot is mentioned.
   - Can occasionally send brainrot GIF links.
   - Supports remember-instructions from chat messages to store user facts.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).

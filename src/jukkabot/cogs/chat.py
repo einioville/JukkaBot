@@ -59,7 +59,6 @@ MAX_MEMORY_CONTEXT_CHARS = 3500
 MAX_PARTICIPANTS_IN_MEMORY = 10
 GIF_CHANCE = 0.2
 GIF_COOLDOWN_SECONDS = 60
-MAX_MESSAGES_WITHOUT_BOT_REPLY = 6
 MAX_REPLY_CHUNKS = 6
 MAX_DISCORD_MESSAGE_CHARS = 1900
 BRAINROT_GIF_URLS = (
@@ -68,18 +67,6 @@ BRAINROT_GIF_URLS = (
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExd3NpN3Vmd2wyZzVnYTRoN2V0OG8xN2NnZmxjOGM5N2E4YXF5aXVkNiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/13CoXDiaCcCoyk/giphy.gif",
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWF4Mjh3Y2ptMDRvMWNuY2xha2RmOHMyc3A2MHhqeGZ2M3V2a2dubiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/11mwI67GLeMvgA/giphy.gif",
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWN3NXU4Y2hwN3N6eDZ4bW1wajk2NnljcGc3M3djY3llMjI2M3cybiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/xT0xeJpnrWC4XWblEk/giphy.gif",
-)
-REPLY_TRIGGER_TOKENS = (
-    "bot",
-    "jukka",
-    "what",
-    "why",
-    "how",
-    "bruh",
-    "bro",
-    "wtf",
-    "lol",
-    "lmao",
 )
 REMEMBER_COMMAND_PATTERN = re.compile(
     r"^\s*(?:jukka[\s,:-]*)?(?:remember(?:\s+that)?|muista(?:\s+että| et)?)\s+(.+)$",
@@ -149,15 +136,14 @@ class ChatCog(commands.Cog):
             pass
 
     @app_commands.command(name="chat", description="Manage AI chat for this channel.")
-    @app_commands.describe(action="Enable, disable, or inspect chat mode.")
+    @app_commands.describe(action="Enable or disable chat mode.")
     @app_commands.choices(
         action=[
             app_commands.Choice(name="on", value="on"),
             app_commands.Choice(name="off", value="off"),
-            app_commands.Choice(name="status", value="status"),
         ]
     )
-    async def chat(self, interaction: discord.Interaction, action: str = "on") -> None:
+    async def chat(self, interaction: discord.Interaction, action: str) -> None:
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message(
@@ -175,31 +161,6 @@ class ChatCog(commands.Cog):
 
         selected_action = action.strip().casefold()
         now = datetime.now(UTC)
-        if selected_action == "status":
-            session = self.sessions.get(guild.id)
-            if session is None:
-                await interaction.response.send_message(
-                    "Chat mode is currently off in this server.",
-                    ephemeral=True,
-                )
-                return
-
-            remaining = int(
-                max(
-                    0.0,
-                    (
-                        self.idle_timeout
-                        - (now - session.last_human_message_at)
-                    ).total_seconds(),
-                )
-            )
-            await interaction.response.send_message(
-                f"Chat mode is on in <#{session.channel_id}>. "
-                f"Auto-off in {remaining}s if the channel stays quiet.",
-                ephemeral=True,
-            )
-            return
-
         if selected_action == "off":
             if guild.id not in self.sessions:
                 await interaction.response.send_message(
@@ -216,7 +177,7 @@ class ChatCog(commands.Cog):
 
         if selected_action != "on":
             await interaction.response.send_message(
-                "Invalid action. Use on, off, or status.",
+                "Invalid action. Use on or off.",
                 ephemeral=True,
             )
             return
@@ -224,6 +185,14 @@ class ChatCog(commands.Cog):
         if self.openai_service is None:
             await interaction.response.send_message(
                 "Chat mode is unavailable because OPENAI_API_KEY is not configured.",
+                ephemeral=True,
+            )
+            return
+
+        existing = self.sessions.get(guild.id)
+        if existing is not None and existing.channel_id == channel.id:
+            await interaction.response.send_message(
+                "Chat mode is already on in this channel.",
                 ephemeral=True,
             )
             return
@@ -408,40 +377,10 @@ class ChatCog(commands.Cog):
             )
         return added
 
-    def _should_reply(
-        self,
-        message: discord.Message,
-        session: ChatSession,
-        prompt: str,
-        now: datetime,
-    ) -> bool:
-        if self.bot.user and any(user.id == self.bot.user.id for user in message.mentions):
-            return True
-        if message.reference and isinstance(message.reference.resolved, discord.Message):
-            referenced = message.reference.resolved
-            if referenced.author.id == self.bot.user.id:
-                return True
-
-        if session.messages_since_last_reply >= MAX_MESSAGES_WITHOUT_BOT_REPLY:
-            return True
-
-        chance = 0.15
-        lowered = prompt.casefold()
-        if "?" in prompt:
-            chance += 0.12
-        if any(token in lowered for token in REPLY_TRIGGER_TOKENS):
-            chance += 0.12
-        if session.messages_since_last_reply >= 3:
-            chance += 0.18
-        if session.last_bot_reply_at is None:
-            chance += 0.2
-        else:
-            silence = (now - session.last_bot_reply_at).total_seconds()
-            if silence >= 60:
-                chance += 0.1
-            if silence >= 180:
-                chance += 0.2
-        return random.random() < min(0.9, chance)
+    def _is_bot_mentioned(self, message: discord.Message) -> bool:
+        if self.bot.user is None:
+            return False
+        return any(user.id == self.bot.user.id for user in message.mentions)
 
     def _should_send_gif(self, session: ChatSession, now: datetime) -> bool:
         if session.last_gif_sent_at is not None:
@@ -503,10 +442,8 @@ class ChatCog(commands.Cog):
         participant.message_count += 1
         participant.last_message = prompt[:300]
         session.messages_since_last_reply += 1
-        remembered_fact = self._remember_user_fact(message, session)
-
-        now = datetime.now(UTC)
-        if not remembered_fact and not self._should_reply(message, session, prompt, now):
+        self._remember_user_fact(message, session)
+        if not self._is_bot_mentioned(message):
             return
 
         lock = self._reply_locks.setdefault(message.guild.id, asyncio.Lock())

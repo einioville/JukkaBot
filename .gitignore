@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 config.json
+resources/prompts/*.txt
+!resources/prompts/.gitkeep
 dist/
 build/
 .pytest_cache/

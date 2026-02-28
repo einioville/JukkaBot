@@ -12,7 +12,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/bass`: apply bass boost filter with level control (`0..20`)
   - `/clear`: clear queue and delete now-playing message
   - `/leave`: disconnect and clear queue
-  - `/chat`: AI chat mode (`on`, `off`, `status`) for the current server/channel
+  - `/chat`: AI chat mode (`on`, `off`) for the current server/channel
   - `/banuser`: ban user from queueing/skipping
   - `/unbanuser`: remove queue/skip ban
   - `/stats`: Tracker stats command (currently disabled until Tracker app approval)
@@ -38,15 +38,15 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - active equalizer/filter preset per guild
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 - Chat mode:
-  - `/chat` or `/chat on` enables AI chat in the current guild/channel
+  - `/chat action:on` enables AI chat in the current guild/channel
   - Reads supported text attachments from messages and uses them as context
-  - Reviews channel messages and decides when to reply (no mention required)
+  - Bot replies only when it is mentioned in chat
   - If users send `remember ...` / `remember that ...` (also `muista ...`), bot stores user facts
   - Stored facts are reused in later replies for continuity
   - Handles long model replies by splitting them into multiple Discord messages
   - Occasionally sends brainrot GIF links
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
-  - `/chat off` disables immediately, `/chat status` shows active channel + idle timer
+  - `/chat action:off` disables immediately
 
 ## Project Layout
 - `src/jukkabot/`: main bot package
@@ -96,6 +96,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - If slash commands do not appear, confirm bot invite has `applications.commands` scope and wait for Discord command propagation after restart/sync.
 - Chat mode requires Discord Message Content Intent in the developer portal for full channel message processing.
 - Chat prompt is loaded from `config.json` key `chat.system_prompt_file` (project-relative file path).
+- Prompt files under `resources/prompts/*.txt` are ignored by git; keep your personal prompt there locally.
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
 - `temperature` parameter is currently not sent to the API (temporary compatibility mode).
 - OpenAI timeouts are retried automatically with short backoff.
