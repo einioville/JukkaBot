@@ -94,8 +94,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - `/stats` is intentionally disabled in code (`TRACKER_STATS_ENABLED = False`) until Tracker approves API access for the app.
 - If slash commands do not appear, confirm bot invite has `applications.commands` scope and wait for Discord command propagation after restart/sync.
 - Chat mode requires Discord Message Content Intent in the developer portal for full channel message processing.
-- Chat system prompt is stored in `config.json` under `chat.system_prompt`.
-- Optional: `chat.system_prompt_file` can point to a prompt file inside the project.
+- Chat prompt is loaded from `config.json` key `chat.system_prompt_file` (project-relative file path).
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
 - `temperature` parameter is currently not sent to the API (temporary compatibility mode).
 
@@ -103,7 +102,6 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 ```json
 {
   "chat": {
-    "system_prompt": "Fallback prompt if file-based prompt is missing.",
     "system_prompt_file": "resources/prompts/ragebait_chat_prompt.txt",
     "user_facts": {
       "727518463886753812": {

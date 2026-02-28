@@ -15,6 +15,7 @@ from jukkabot.queue_manager import QueueManager
 from jukkabot.tracker_service import TrackerService
 
 logging.basicConfig(level=logging.INFO)
+DEFAULT_CHAT_PROMPT_FILE = "resources/prompts/ragebait_chat_prompt.txt"
 
 
 class JukkaBot(commands.Bot):
@@ -34,7 +35,7 @@ class JukkaBot(commands.Bot):
             else None
         )
         self.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
-        self.chat_system_prompt_file: str | None = None
+        self.chat_system_prompt_file: str | None = DEFAULT_CHAT_PROMPT_FILE
         self.chat_user_facts_by_guild: dict[int, dict[int, list[str]]] = {}
         self.chat_user_names_by_guild: dict[int, dict[int, str]] = {}
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
@@ -67,18 +68,13 @@ class JukkaBot(commands.Bot):
         if isinstance(chat, dict):
             system_prompt_file = chat.get("system_prompt_file")
             if isinstance(system_prompt_file, str) and system_prompt_file.strip():
-                prompt_text = self._load_chat_prompt_from_project_file(system_prompt_file.strip())
-                if prompt_text:
-                    self.chat_system_prompt_file = system_prompt_file.strip()
-                    self.chat_system_prompt = prompt_text
-            system_prompt = chat.get("system_prompt")
-            if (
-                isinstance(system_prompt, str)
-                and system_prompt.strip()
-                and self.chat_system_prompt == DEFAULT_CHAT_SYSTEM_PROMPT
-            ):
-                self.chat_system_prompt = system_prompt.strip()
+                self.chat_system_prompt_file = system_prompt_file.strip()
             self._load_chat_user_facts(chat.get("user_facts"))
+
+        if self.chat_system_prompt_file:
+            prompt_text = self._load_chat_prompt_from_project_file(self.chat_system_prompt_file)
+            if prompt_text:
+                self.chat_system_prompt = prompt_text
         guilds = payload.get("guilds")
         if isinstance(guilds, dict):
             self.queue_manager.load_persistent_state(guilds)
@@ -185,9 +181,7 @@ class JukkaBot(commands.Bot):
             self.chat_system_prompt = (
                 self.openai_service.system_prompt.strip() or DEFAULT_CHAT_SYSTEM_PROMPT
             )
-        chat_payload: dict[str, object] = {
-            "system_prompt": self.chat_system_prompt,
-        }
+        chat_payload: dict[str, object] = {}
         if self.chat_system_prompt_file:
             chat_payload["system_prompt_file"] = self.chat_system_prompt_file
         serialized_user_facts: dict[str, dict[str, dict[str, object]]] = {}
