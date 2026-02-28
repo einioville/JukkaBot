@@ -12,6 +12,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/bass`: apply bass boost filter with level control (`0..20`)
   - `/clear`: clear queue and delete now-playing message
   - `/leave`: disconnect and clear queue
+  - `/chat`: AI chat mode (`on`, `off`, `status`) for the current server/channel
   - `/banuser`: ban user from queueing/skipping
   - `/unbanuser`: remove queue/skip ban
   - `/stats`: Tracker stats command (currently disabled until Tracker app approval)
@@ -36,11 +37,17 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - banned users per guild
   - active equalizer/filter preset per guild
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
+- Chat mode:
+  - `/chat on` enables AI chat in the current guild/channel
+  - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
+  - `/chat off` disables immediately, `/chat status` shows active channel + idle timer
 
 ## Project Layout
 - `src/jukkabot/`: main bot package
 - `src/jukkabot/cogs/music.py`: music command/cog logic
+- `src/jukkabot/cogs/chat.py`: AI chat mode command/cog logic
 - `src/jukkabot/music_service.py`: YouTube search/stream source resolving
+- `src/jukkabot/openai_service.py`: OpenAI API client
 - `src/jukkabot/tracker_service.py`: Tracker API client
 - `tests/`: tests
 
@@ -58,6 +65,12 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 4. Configure `.env`:
    - `DISCORD_BOT_TOKEN` (required)
    - `ADMIN_USER_IDS` (optional, comma-separated user IDs)
+   - `OPENAI_API_KEY` (required for `/chat on`)
+   - `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
+   - `CHAT_SYSTEM_PROMPT` (optional, controls bot speaking style)
+   - `CHAT_TEMPERATURE` (optional, default `0.8`)
+   - `CHAT_MAX_OUTPUT_TOKENS` (optional, default `220`)
+   - `CHAT_IDLE_TIMEOUT_SECONDS` (optional, default `300`)
    - `TRACKER_API_KEY` or `TRN_API_KEY` (optional while `/stats` is disabled)
 5. Run:
    ```powershell
@@ -76,3 +89,4 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 ## Notes
 - `/stats` is intentionally disabled in code (`TRACKER_STATS_ENABLED = False`) until Tracker approves API access for the app.
 - If slash commands do not appear, confirm bot invite has `applications.commands` scope and wait for Discord command propagation after restart/sync.
+- Chat mode requires Discord Message Content Intent in the developer portal for full channel message processing.

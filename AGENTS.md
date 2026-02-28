@@ -18,6 +18,9 @@
 - `/pause`: toggle pause/resume.
 - `/clear`: clear queue/history/current track and delete now-playing message.
 - `/leave`: disconnect from voice and clear queue/history/current state.
+- `/chat`: chat mode for current channel (`on`, `off`, `status`).
+  - One active chat channel per guild.
+  - Auto-disable after 5 minutes of quiet.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
@@ -53,6 +56,16 @@
   - banned users
   - active equalizer/filter
 - `config.json` is gitignored.
+
+# AI Chat Config
+- Chat mode uses OpenAI API.
+- Configure via `.env`:
+  - `OPENAI_API_KEY`
+  - `OPENAI_MODEL`
+  - `CHAT_SYSTEM_PROMPT`
+  - `CHAT_TEMPERATURE`
+  - `CHAT_MAX_OUTPUT_TOKENS`
+  - `CHAT_IDLE_TIMEOUT_SECONDS`
 
 # Architecture
 - Code lives under `src/`.

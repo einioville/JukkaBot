@@ -8,8 +8,9 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
-from jukkabot.config import load_settings
+from jukkabot.config import Settings, load_settings
 from jukkabot.music_service import MusicService
+from jukkabot.openai_service import OpenAIService
 from jukkabot.queue_manager import QueueManager
 from jukkabot.tracker_service import TrackerService
 
@@ -17,19 +18,33 @@ logging.basicConfig(level=logging.INFO)
 
 
 class JukkaBot(commands.Bot):
-    def __init__(self, admin_user_ids: set[int], tracker_api_key: str | None) -> None:
+    def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.default()
-        intents.message_content = False
+        intents.message_content = True
         intents.guilds = True
         intents.voice_states = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        self.admin_user_ids = admin_user_ids
+        self.admin_user_ids = settings.admin_user_ids
         self.queue_manager = QueueManager()
         self.music_service = MusicService()
         self.tracker_service = (
-            TrackerService(api_key=tracker_api_key) if tracker_api_key else None
+            TrackerService(api_key=settings.tracker_api_key)
+            if settings.tracker_api_key
+            else None
         )
+        self.openai_service = (
+            OpenAIService(
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                system_prompt=settings.chat_system_prompt,
+                temperature=settings.chat_temperature,
+                max_output_tokens=settings.chat_max_output_tokens,
+            )
+            if settings.openai_api_key
+            else None
+        )
+        self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
         self._load_persistent_config()
 
@@ -68,6 +83,7 @@ class JukkaBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.load_extension("jukkabot.cogs.music")
+        await self.load_extension("jukkabot.cogs.chat")
         synced = await self.tree.sync()
         logging.info("Synced %s slash commands.", len(synced))
 
@@ -82,10 +98,7 @@ class JukkaBot(commands.Bot):
 
 def run() -> None:
     settings = load_settings()
-    bot = JukkaBot(
-        admin_user_ids=settings.admin_user_ids,
-        tracker_api_key=settings.tracker_api_key,
-    )
+    bot = JukkaBot(settings)
 
     async def runner() -> None:
         try:
