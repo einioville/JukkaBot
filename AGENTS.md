@@ -1,48 +1,65 @@
-# Repository Guidelines
+# Description
+- Target is to make a discord bot that is capable of playing music from youtube
+- Language used is Python
 
-## Project Structure & Module Organization
-This repository is currently a clean scaffold. Keep the layout predictable as code is added:
-- `src/`: application or library source code.
-- `tests/`: automated tests mirroring `src/` paths.
-- `assets/`: static files (images, sample data, fixtures).
-- `docs/`: architecture notes, ADRs, and onboarding docs.
+# Features
+- Use slash "/" -commands to run commands
+- All features are per server and should be managed so that they can be identified by the server
 
-Example:
-```text
-src/features/auth/
-tests/features/auth/
-assets/images/
-```
+## Commands
+- Running every command should follow this procedure before being ran:
+1. If bot is not playing or joined a channel proceed to the command
+2. If bot is at a channel and the user is at the same channel proceed to the command
 
-## Build, Test, and Development Commands
-No build tooling is committed yet. When adding tooling, expose standard entry points and keep them stable:
-- `npm run dev` (or equivalent): run locally with reload.
-- `npm test`: run all tests.
-- `npm run lint`: run static checks.
-- `npm run build`: produce production artifacts.
+### play
+- Writing "/play" to the chat opens a query where user is asked for track name
+  - When user types to the box there is a 2 second threshold, after triggered the bot searches youtube with the text currently written by the user and suggests songs to be played
+- If there is no tracks playing the bot tries to join the channel the user is currently in
+  - If this fails, it outputs a message to the user telling the issue
+- If there is tracks playing and in the queue the bot checks if the user is in the same channel as the bot
+  - If yes, the bot adds the requested song to the queue
+  - If not, the bot tells the user that it needs to be in the same voice channel as the bot
+- If i missed something remind me. The play command should act the same as in Spotify for example
 
-If the project uses another stack (e.g., `make`, `pytest`, `dotnet`), document equivalent commands in `README.md` and keep this file aligned.
 
-## Coding Style & Naming Conventions
-- Use 4 spaces for indentation unless language conventions require otherwise.
-- Prefer descriptive, domain-based names (`user_service`, `order_validator`).
-- Use `PascalCase` for classes/types, `camelCase` for functions/variables, and `kebab-case` for file names where idiomatic.
-- Enforce formatting/linting with project tools (for example Prettier/ESLint, Black/Ruff, or language-native linters).
+### Join
+- Try to join the channel the user is currently
+  - If this fails tell the user
+- If bot is currently at any channel don't switch channels
+  - Only switch if the bot is alone in a channel
+    - Notify user about this
+  - Ignore if the user is at same channel as the bot already
 
-## Testing Guidelines
-- Place tests under `tests/` with paths matching source modules.
-- Name tests clearly by behavior (example: `auth_login_rejects_invalid_password`).
-- Add unit tests for new logic and regression tests for bug fixes.
-- Target meaningful coverage for changed code; avoid untested feature additions.
+### skip
+- skips the song if bot is currently playing
+- User needs to be on the same channel as the bot
 
-## Commit & Pull Request Guidelines
-With no existing Git history, adopt a conventional format:
-- Commit style: `type(scope): short summary` (e.g., `feat(auth): add token refresh flow`).
-- Keep commits focused and atomic.
-- PRs should include: purpose, key changes, test evidence, and linked issue/task.
-- Include screenshots or logs when UI or behavior changes are visible.
+### banuser
+- This command can be only executed by me and the admins of the server
+- Bans specific user from queueing and skipping songs
 
-## Security & Configuration Tips
-- Never commit secrets; use environment variables and a checked-in `.env.example`.
-- Pin dependency versions where practical.
-- Review new dependencies for maintenance and license suitability.
+### unbanuser
+- Similar as the banuser, but does the opposite
+
+## Automation
+- If the bot is only user in the channel leave after 5 minutes of inactivity
+
+## Queue system
+- Queue system should be per server and it works similar to spotifys and other streaming platform
+
+## currenly playing message
+- Remove the last "currently playing" message before sending new one
+- Displays the thumbnail, title, author, lenght of the currently played media and the name of the next track
+- Add reaction buttons to:
+  - Seek last and next track
+    - If media has been played more than 5 seconds the last media starts the current media from start
+    - When going to previous track, put the current media back to the queue
+  - pause
+  - shuffle queue
+  - loop the current track
+
+# Architecure
+- src/ holds the code
+- Organize things into different files
+  - For example queue system, currently playing generator etc. to different files.
+- I will fix the structure later and you can update this
