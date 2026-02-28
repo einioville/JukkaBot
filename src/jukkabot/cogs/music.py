@@ -24,7 +24,6 @@ TRACKER_STATS_ENABLED = False
 
 FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "off": ("Off", None),
-    "bassboost": ("Bass Boost", "bass=g=10:f=110:w=0.8"),
     "hiphop": ("Hip Hop", "bass=g=8:f=95:w=0.8,treble=g=2:f=3500:w=0.7"),
     "edm": ("EDM", "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"),
     "dance": (
@@ -735,7 +734,7 @@ class MusicCog(commands.Cog):
     async def bass(
         self,
         interaction: discord.Interaction,
-        level: app_commands.Range[int, 0, 20] = 10,
+        level: app_commands.Range[int, 0, 20],
     ) -> None:
         is_allowed, _ = await self._validate_channel_access(interaction)
         if not is_allowed:
