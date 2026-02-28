@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,6 +20,9 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "Keep responses concise and conversational."
 )
 EMPTY_OUTPUT_FALLBACK_REPLY = "nah this is insane :D"
+MAX_INPUT_MESSAGE_CHARS = 3000
+MAX_TOTAL_INPUT_CHARS = 18000
+MAX_API_RETRIES = 3
 
 
 class OpenAIService:
@@ -40,18 +45,7 @@ class OpenAIService:
         self._unsupported_params: set[str] = set()
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
-        input_messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
-        for message in messages:
-            role = message.get("role")
-            content = message.get("content")
-            if role not in {"user", "assistant"}:
-                continue
-            if not isinstance(content, str):
-                continue
-            trimmed = content.strip()
-            if not trimmed:
-                continue
-            input_messages.append({"role": role, "content": trimmed})
+        input_messages = self._build_input_messages(messages)
 
         base_payload = {
             "model": self.model,
@@ -112,7 +106,7 @@ class OpenAIService:
         base_payload: dict[str, Any],
         optional_payload: dict[str, Any],
     ) -> str:
-        max_attempts = 4
+        max_attempts = MAX_API_RETRIES
         for _attempt in range(max_attempts):
             payload = dict(base_payload)
             for key, value in optional_payload.items():
@@ -152,12 +146,77 @@ class OpenAIService:
                 raise OpenAIServiceError(
                     f"OpenAI API request failed ({exc.code}): {message}"
                 ) from exc
+            except (TimeoutError, socket.timeout) as exc:
+                if _attempt < max_attempts - 1:
+                    delay = 0.5 * (_attempt + 1)
+                    logger.warning(
+                        "OpenAI API request timed out for model %s (attempt %s/%s); "
+                        "retrying in %.1fs.",
+                        self.model,
+                        _attempt + 1,
+                        max_attempts,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise OpenAIServiceError("OpenAI API request timed out.") from exc
             except URLError as exc:
+                reason = getattr(exc, "reason", None)
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    if _attempt < max_attempts - 1:
+                        delay = 0.5 * (_attempt + 1)
+                        logger.warning(
+                            "OpenAI API network timeout for model %s (attempt %s/%s); "
+                            "retrying in %.1fs.",
+                            self.model,
+                            _attempt + 1,
+                            max_attempts,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    raise OpenAIServiceError("OpenAI API request timed out.") from exc
                 raise OpenAIServiceError("Could not reach OpenAI API.") from exc
 
         raise OpenAIServiceError(
             "OpenAI API request failed: model rejected supported parameter set."
         )
+
+    def _build_input_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        system_prompt = self.system_prompt.strip()
+        if len(system_prompt) > MAX_INPUT_MESSAGE_CHARS:
+            system_prompt = f"{system_prompt[:MAX_INPUT_MESSAGE_CHARS]}..."
+        input_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+        cleaned: list[dict[str, str]] = []
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content")
+            if role not in {"user", "assistant"}:
+                continue
+            if not isinstance(content, str):
+                continue
+            trimmed = content.strip()
+            if not trimmed:
+                continue
+            if len(trimmed) > MAX_INPUT_MESSAGE_CHARS:
+                trimmed = f"{trimmed[:MAX_INPUT_MESSAGE_CHARS]}..."
+            cleaned.append({"role": role, "content": trimmed})
+
+        total_chars = len(system_prompt)
+        selected_reversed: list[dict[str, str]] = []
+        for message in reversed(cleaned):
+            content = message["content"]
+            projected = total_chars + len(content)
+            if selected_reversed and projected > MAX_TOTAL_INPUT_CHARS:
+                break
+            selected_reversed.append(message)
+            total_chars = projected
+            if total_chars >= MAX_TOTAL_INPUT_CHARS:
+                break
+
+        input_messages.extend(reversed(selected_reversed))
+        return input_messages
 
     def _extract_unsupported_parameter(self, message: str) -> str | None:
         patterns = (

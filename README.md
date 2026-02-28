@@ -43,6 +43,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - Reviews channel messages and decides when to reply (no mention required)
   - If users send `remember ...` / `remember that ...` (also `muista ...`), bot stores user facts
   - Stored facts are reused in later replies for continuity
+  - Handles long model replies by splitting them into multiple Discord messages
   - Occasionally sends brainrot GIF links
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
   - `/chat off` disables immediately, `/chat status` shows active channel + idle timer
@@ -97,6 +98,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Chat prompt is loaded from `config.json` key `chat.system_prompt_file` (project-relative file path).
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
 - `temperature` parameter is currently not sent to the API (temporary compatibility mode).
+- OpenAI timeouts are retried automatically with short backoff.
 
 ### Chat Prompt Config
 ```json

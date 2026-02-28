@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from jukkabot.cogs.chat import ChatCog, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_TEXT_CHARS
+from jukkabot.cogs.chat import (
+    ChatCog,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_TEXT_CHARS,
+    MAX_DISCORD_MESSAGE_CHARS,
+)
 
 
 class _FakeAttachment:
@@ -102,3 +107,13 @@ def test_extract_memory_fact_payload() -> None:
     )
     assert cog._extract_memory_fact_payload("muista et Ville tykkaa fortnitesta") is not None
     assert cog._extract_memory_fact_payload("just chatting") is None
+
+
+def test_split_discord_chunks_splits_long_text() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    text = "a" * (MAX_DISCORD_MESSAGE_CHARS + 50)
+
+    chunks = cog._split_discord_chunks(text)
+
+    assert len(chunks) >= 2
+    assert all(len(chunk) <= MAX_DISCORD_MESSAGE_CHARS + 4 for chunk in chunks)

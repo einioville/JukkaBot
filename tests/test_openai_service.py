@@ -127,3 +127,23 @@ def test_generate_reply_recovers_after_max_tokens_retry(
     assert reply == "Recovered after retry"
     assert payloads[0]["max_output_tokens"] == 220
     assert payloads[1]["max_output_tokens"] == 440
+
+
+def test_generate_reply_retries_timeout_and_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    calls = 0
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("timed out")
+        return _FakeResponse({"output_text": "after timeout"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply([{"role": "user", "content": "Hi"}])
+
+    assert reply == "after timeout"
+    assert calls == 2

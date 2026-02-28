@@ -55,10 +55,13 @@ MAX_ATTACHMENT_BYTES = 256 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 3
 MAX_ATTACHMENT_TEXT_CHARS = 3500
 MAX_MESSAGE_CONTEXT_CHARS = 8000
+MAX_MEMORY_CONTEXT_CHARS = 3500
 MAX_PARTICIPANTS_IN_MEMORY = 10
 GIF_CHANCE = 0.2
 GIF_COOLDOWN_SECONDS = 60
 MAX_MESSAGES_WITHOUT_BOT_REPLY = 6
+MAX_REPLY_CHUNKS = 6
+MAX_DISCORD_MESSAGE_CHARS = 1900
 BRAINROT_GIF_URLS = (
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcW0zbnNoOTI4Y2V3YjQ3azJmdGRob3YxY2MyYjBicW5mZG9kN3RzYiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/3o7aD2saalBwwftBIY/giphy.gif",
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdjYwbnk1Y2Y5dTFrc2h5aXJhM3A2eG1sYjBvYjFkdzJnbnhwMWhqMCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l4FGpP4lxGGgK5CBW/giphy.gif",
@@ -328,8 +331,10 @@ class ChatCog(commands.Cog):
                     fact_lines.append(f"- {display_name}: {preview}")
                 if fact_lines:
                     sections.append("Remembered user facts:\n" + "\n".join(fact_lines))
-
-        return "\n\n".join(section for section in sections if section).strip()
+        combined = "\n\n".join(section for section in sections if section).strip()
+        if len(combined) > MAX_MEMORY_CONTEXT_CHARS:
+            combined = f"{combined[:MAX_MEMORY_CONTEXT_CHARS]}..."
+        return combined
 
     def _extract_memory_fact_payload(self, content: str) -> str | None:
         match = REMEMBER_COMMAND_PATTERN.match(content)
@@ -445,6 +450,30 @@ class ChatCog(commands.Cog):
                 return False
         return random.random() < GIF_CHANCE
 
+    def _split_discord_chunks(self, text: str, limit: int = MAX_DISCORD_MESSAGE_CHARS) -> list[str]:
+        remaining = text.strip()
+        if not remaining:
+            return []
+        chunks: list[str] = []
+        while len(remaining) > limit:
+            split_index = remaining.rfind("\n", 0, limit)
+            if split_index < int(limit * 0.6):
+                split_index = remaining.rfind(" ", 0, limit)
+            if split_index <= 0:
+                split_index = limit
+            chunk = remaining[:split_index].strip()
+            if chunk:
+                chunks.append(chunk)
+            remaining = remaining[split_index:].lstrip()
+            if len(chunks) >= MAX_REPLY_CHUNKS:
+                break
+
+        if remaining and len(chunks) < MAX_REPLY_CHUNKS:
+            chunks.append(remaining)
+        elif remaining and chunks:
+            chunks[-1] = f"{chunks[-1]}\n..."
+        return chunks
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
@@ -506,19 +535,30 @@ class ChatCog(commands.Cog):
                 logger.exception("Unexpected chat reply failure in guild %s", message.guild.id)
                 return
 
-            trimmed = response_text.strip()
-            if not trimmed:
+            response_clean = response_text.strip()
+            if not response_clean:
                 return
-            if len(trimmed) > 1900:
-                trimmed = f"{trimmed[:1897]}..."
+            history_response = (
+                response_clean
+                if len(response_clean) <= 4000
+                else f"{response_clean[:3997]}..."
+            )
+            active_session.history.append({"role": "assistant", "content": history_response})
+            chunks = self._split_discord_chunks(response_clean)
+            if not chunks:
+                return
 
-            active_session.history.append({"role": "assistant", "content": trimmed})
             try:
                 await message.reply(
-                    trimmed,
+                    chunks[0],
                     mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+                for extra_chunk in chunks[1:]:
+                    await message.channel.send(
+                        extra_chunk,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
             else:
