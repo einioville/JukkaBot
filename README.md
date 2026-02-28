@@ -41,6 +41,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/chat` or `/chat on` enables AI chat in the current guild/channel
   - Reads supported text attachments from messages and uses them as context
   - Reviews channel messages and decides when to reply (no mention required)
+  - If users send `remember ...` / `remember that ...` (also `muista ...`), bot stores user facts
+  - Stored facts are reused in later replies for continuity
   - Occasionally sends brainrot GIF links
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
   - `/chat off` disables immediately, `/chat status` shows active channel + idle timer
@@ -94,13 +96,22 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Chat mode requires Discord Message Content Intent in the developer portal for full channel message processing.
 - Chat system prompt is stored in `config.json` under `chat.system_prompt`.
 - Optional: `chat.system_prompt_file` can point to a prompt file inside the project.
+- OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
 
 ### Chat Prompt Config
 ```json
 {
   "chat": {
     "system_prompt": "Fallback prompt if file-based prompt is missing.",
-    "system_prompt_file": "resources/prompts/ragebait_chat_prompt.txt"
+    "system_prompt_file": "resources/prompts/ragebait_chat_prompt.txt",
+    "user_facts": {
+      "727518463886753812": {
+        "481082798321434635": {
+          "name": "ville",
+          "facts": ["likes fortnite"]
+        }
+      }
+    }
   }
 }
 ```

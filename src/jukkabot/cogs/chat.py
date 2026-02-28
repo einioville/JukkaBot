@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -77,6 +78,10 @@ REPLY_TRIGGER_TOKENS = (
     "lol",
     "lmao",
 )
+REMEMBER_COMMAND_PATTERN = re.compile(
+    r"^\s*(?:jukka[\s,:-]*)?(?:remember(?:\s+that)?|muista(?:\s+että| et)?)\s+(.+)$",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -89,6 +94,7 @@ class ParticipantState:
 
 @dataclass(slots=True)
 class ChatSession:
+    guild_id: int
     channel_id: int
     last_human_message_at: datetime
     history: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=30))
@@ -220,6 +226,7 @@ class ChatCog(commands.Cog):
             return
 
         self.sessions[guild.id] = ChatSession(
+            guild_id=guild.id,
             channel_id=channel.id,
             last_human_message_at=now,
         )
@@ -275,26 +282,126 @@ class ChatCog(commands.Cog):
         return combined
 
     def _build_participant_memory(self, session: ChatSession) -> str:
-        if not session.participants:
-            return ""
-        ranked = sorted(
-            session.participants.values(),
-            key=lambda participant: (
-                participant.message_count,
-                participant.cooked_count,
-            ),
-            reverse=True,
-        )[:MAX_PARTICIPANTS_IN_MEMORY]
-        lines: list[str] = []
-        for participant in ranked:
-            last_message = participant.last_message.replace("\n", " ").strip()
-            if len(last_message) > 120:
-                last_message = f"{last_message[:117]}..."
-            lines.append(
-                f"- {participant.display_name}: messages={participant.message_count}, "
-                f"cooked={participant.cooked_count}, last=\"{last_message}\""
+        sections: list[str] = []
+        if session.participants:
+            ranked = sorted(
+                session.participants.values(),
+                key=lambda participant: (
+                    participant.message_count,
+                    participant.cooked_count,
+                ),
+                reverse=True,
+            )[:MAX_PARTICIPANTS_IN_MEMORY]
+            lines: list[str] = []
+            for participant in ranked:
+                last_message = participant.last_message.replace("\n", " ").strip()
+                if len(last_message) > 120:
+                    last_message = f"{last_message[:117]}..."
+                lines.append(
+                    f"- {participant.display_name}: messages={participant.message_count}, "
+                    f"cooked={participant.cooked_count}, last=\"{last_message}\""
+                )
+            sections.append("Conversation participants and memory:\n" + "\n".join(lines))
+
+        get_facts = getattr(self.bot, "get_chat_user_facts", None)
+        get_name = getattr(self.bot, "get_chat_user_display_name", None)
+        if callable(get_facts):
+            facts_by_user = get_facts(session.guild_id)
+            if facts_by_user:
+                fact_lines: list[str] = []
+                sorted_users = sorted(
+                    facts_by_user.items(),
+                    key=lambda pair: len(pair[1]),
+                    reverse=True,
+                )[:MAX_PARTICIPANTS_IN_MEMORY]
+                for user_id, facts in sorted_users:
+                    if not facts:
+                        continue
+                    display_name = (
+                        get_name(session.guild_id, user_id)
+                        if callable(get_name)
+                        else None
+                    ) or f"user-{user_id}"
+                    preview = "; ".join(facts[:3])
+                    if len(preview) > 240:
+                        preview = f"{preview[:237]}..."
+                    fact_lines.append(f"- {display_name}: {preview}")
+                if fact_lines:
+                    sections.append("Remembered user facts:\n" + "\n".join(fact_lines))
+
+        return "\n\n".join(section for section in sections if section).strip()
+
+    def _extract_memory_fact_payload(self, content: str) -> str | None:
+        match = REMEMBER_COMMAND_PATTERN.match(content)
+        if not match:
+            return None
+        payload = match.group(1).strip()
+        return payload or None
+
+    def _resolve_target_user_for_fact(
+        self,
+        message: discord.Message,
+        session: ChatSession,
+        payload: str,
+    ) -> tuple[int, str, str]:
+        if message.mentions:
+            mention = next((user for user in message.mentions if not user.bot), None)
+            if mention is not None:
+                fact_text = re.sub(r"<@!?\d+>", "", payload).strip(" ,:-")
+                display_name = (
+                    mention.display_name
+                    if isinstance(mention, discord.Member)
+                    else mention.name
+                )
+                if fact_text:
+                    return mention.id, display_name, fact_text
+
+        token, _, remainder = payload.partition(" ")
+        token = token.strip(" ,:;.!?")
+        if token and remainder.strip():
+            token_cf = token.casefold()
+            for user_id, participant in session.participants.items():
+                participant_cf = participant.display_name.casefold()
+                if participant_cf == token_cf or participant_cf.startswith(token_cf):
+                    return user_id, participant.display_name, remainder.strip()
+            if isinstance(message.guild, discord.Guild):
+                for member in message.guild.members:
+                    if (
+                        member.display_name.casefold() == token_cf
+                        or member.name.casefold() == token_cf
+                    ):
+                        return member.id, member.display_name, remainder.strip()
+
+        author_name = (
+            message.author.display_name
+            if isinstance(message.author, discord.Member)
+            else message.author.name
+        )
+        return message.author.id, author_name, payload
+
+    def _remember_user_fact(self, message: discord.Message, session: ChatSession) -> bool:
+        payload = self._extract_memory_fact_payload(message.content)
+        if not payload:
+            return False
+
+        target_id, target_name, fact_text = self._resolve_target_user_for_fact(
+            message,
+            session,
+            payload,
+        )
+        add_fact = getattr(self.bot, "add_chat_user_fact", None)
+        if not callable(add_fact):
+            return False
+
+        added = bool(add_fact(message.guild.id, target_id, target_name, fact_text))
+        if added:
+            session.history.append(
+                {
+                    "role": "assistant",
+                    "content": f"Memory stored: {target_name} -> {fact_text}",
+                }
             )
-        return "Conversation participants and memory:\n" + "\n".join(lines)
+        return added
 
     def _should_reply(
         self,
@@ -367,9 +474,10 @@ class ChatCog(commands.Cog):
         participant.message_count += 1
         participant.last_message = prompt[:300]
         session.messages_since_last_reply += 1
+        remembered_fact = self._remember_user_fact(message, session)
 
         now = datetime.now(UTC)
-        if not self._should_reply(message, session, prompt, now):
+        if not remembered_fact and not self._should_reply(message, session, prompt, now):
             return
 
         lock = self._reply_locks.setdefault(message.guild.id, asyncio.Lock())

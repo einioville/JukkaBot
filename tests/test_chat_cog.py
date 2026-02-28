@@ -91,3 +91,14 @@ def test_build_user_prompt_truncates_long_attachment_text() -> None:
 
     assert len(prompt) < len(long_text) + 100
     assert prompt.endswith("...")
+
+
+def test_extract_memory_fact_payload() -> None:
+    cog = ChatCog.__new__(ChatCog)
+
+    assert (
+        cog._extract_memory_fact_payload("remember that ville likes fortnite")
+        == "ville likes fortnite"
+    )
+    assert cog._extract_memory_fact_payload("muista et Ville tykkaa fortnitesta") is not None
+    assert cog._extract_memory_fact_payload("just chatting") is None

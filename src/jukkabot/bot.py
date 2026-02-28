@@ -35,6 +35,8 @@ class JukkaBot(commands.Bot):
         )
         self.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
         self.chat_system_prompt_file: str | None = None
+        self.chat_user_facts_by_guild: dict[int, dict[int, list[str]]] = {}
+        self.chat_user_names_by_guild: dict[int, dict[int, str]] = {}
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
         self._load_persistent_config()
@@ -76,9 +78,85 @@ class JukkaBot(commands.Bot):
                 and self.chat_system_prompt == DEFAULT_CHAT_SYSTEM_PROMPT
             ):
                 self.chat_system_prompt = system_prompt.strip()
+            self._load_chat_user_facts(chat.get("user_facts"))
         guilds = payload.get("guilds")
         if isinstance(guilds, dict):
             self.queue_manager.load_persistent_state(guilds)
+
+    def _load_chat_user_facts(self, raw: object) -> None:
+        self.chat_user_facts_by_guild.clear()
+        self.chat_user_names_by_guild.clear()
+        if not isinstance(raw, dict):
+            return
+
+        for guild_id_str, guild_payload in raw.items():
+            try:
+                guild_id = int(guild_id_str)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(guild_payload, dict):
+                continue
+
+            guild_facts: dict[int, list[str]] = {}
+            guild_names: dict[int, str] = {}
+            for user_id_str, user_payload in guild_payload.items():
+                try:
+                    user_id = int(user_id_str)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(user_payload, dict):
+                    continue
+
+                facts_raw = user_payload.get("facts")
+                if isinstance(facts_raw, list):
+                    cleaned_facts = [
+                        str(item).strip()
+                        for item in facts_raw
+                        if isinstance(item, str) and item.strip()
+                    ]
+                    if cleaned_facts:
+                        guild_facts[user_id] = cleaned_facts[:20]
+
+                name_raw = user_payload.get("name")
+                if isinstance(name_raw, str) and name_raw.strip():
+                    guild_names[user_id] = name_raw.strip()
+
+            if guild_facts:
+                self.chat_user_facts_by_guild[guild_id] = guild_facts
+            if guild_names:
+                self.chat_user_names_by_guild[guild_id] = guild_names
+
+    def add_chat_user_fact(
+        self,
+        guild_id: int,
+        user_id: int,
+        display_name: str,
+        fact: str,
+    ) -> bool:
+        cleaned_fact = " ".join(fact.strip().split())
+        if not cleaned_fact:
+            return False
+
+        guild_facts = self.chat_user_facts_by_guild.setdefault(guild_id, {})
+        user_facts = guild_facts.setdefault(user_id, [])
+        if any(existing.casefold() == cleaned_fact.casefold() for existing in user_facts):
+            return False
+        user_facts.append(cleaned_fact)
+        if len(user_facts) > 20:
+            del user_facts[:-20]
+
+        cleaned_name = display_name.strip()
+        if cleaned_name:
+            guild_names = self.chat_user_names_by_guild.setdefault(guild_id, {})
+            guild_names[user_id] = cleaned_name
+        return True
+
+    def get_chat_user_facts(self, guild_id: int) -> dict[int, list[str]]:
+        facts = self.chat_user_facts_by_guild.get(guild_id, {})
+        return {user_id: list(items) for user_id, items in facts.items()}
+
+    def get_chat_user_display_name(self, guild_id: int, user_id: int) -> str | None:
+        return self.chat_user_names_by_guild.get(guild_id, {}).get(user_id)
 
     def _load_chat_prompt_from_project_file(self, path_value: str) -> str | None:
         relative_path = Path(path_value)
@@ -107,11 +185,31 @@ class JukkaBot(commands.Bot):
             self.chat_system_prompt = (
                 self.openai_service.system_prompt.strip() or DEFAULT_CHAT_SYSTEM_PROMPT
             )
-        chat_payload: dict[str, str] = {
+        chat_payload: dict[str, object] = {
             "system_prompt": self.chat_system_prompt,
         }
         if self.chat_system_prompt_file:
             chat_payload["system_prompt_file"] = self.chat_system_prompt_file
+        serialized_user_facts: dict[str, dict[str, dict[str, object]]] = {}
+        for guild_id, guild_facts in self.chat_user_facts_by_guild.items():
+            if not guild_facts:
+                continue
+            guild_payload: dict[str, dict[str, object]] = {}
+            guild_names = self.chat_user_names_by_guild.get(guild_id, {})
+            for user_id, facts in guild_facts.items():
+                if not facts:
+                    continue
+                user_payload: dict[str, object] = {
+                    "facts": list(facts),
+                }
+                name = guild_names.get(user_id)
+                if isinstance(name, str) and name.strip():
+                    user_payload["name"] = name.strip()
+                guild_payload[str(user_id)] = user_payload
+            if guild_payload:
+                serialized_user_facts[str(guild_id)] = guild_payload
+        if serialized_user_facts:
+            chat_payload["user_facts"] = serialized_user_facts
         payload = {
             "chat": chat_payload,
             "guilds": self.queue_manager.to_persistent_state(),

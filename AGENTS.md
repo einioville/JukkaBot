@@ -24,6 +24,7 @@
   - Uses message text and supported text attachments as context.
   - Decides dynamically when to reply without requiring mention.
   - Can occasionally send brainrot GIF links.
+  - Supports remember-instructions from chat messages to store user facts.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
@@ -71,6 +72,7 @@
 - Configure prompt via `config.json`:
   - `chat.system_prompt`
   - `chat.system_prompt_file` (project-relative prompt file path)
+  - `chat.user_facts` (persisted per guild/user facts memory)
 
 # Architecture
 - Code lives under `src/`.

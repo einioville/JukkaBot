@@ -52,3 +52,32 @@ def test_generate_reply_maps_unauthorized_error(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(OpenAIServiceError) as excinfo:
         service.generate_reply([{"role": "user", "content": "Hi"}])
     assert "invalid" in str(excinfo.value).lower()
+
+
+def test_generate_reply_retries_without_unsupported_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payload = json.loads(request.data.decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise HTTPError(
+                url="https://api.openai.com/v1/responses",
+                code=400,
+                msg="Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"Unsupported parameter: \'temperature\' is not supported with this model."}}'
+                ),
+            )
+        return _FakeResponse({"output_text": "Recovered"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply([{"role": "user", "content": "Hi"}])
+
+    assert reply == "Recovered"
+    assert "temperature" in payloads[0]
+    assert "temperature" not in payloads[1]

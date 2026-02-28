@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -10,6 +12,7 @@ class OpenAIServiceError(RuntimeError):
     pass
 
 
+logger = logging.getLogger(__name__)
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are JukkaBot, a natural and friendly Discord chat participant. "
     "Keep responses concise and conversational."
@@ -33,6 +36,7 @@ class OpenAIService:
         self.max_output_tokens = max(1, int(max_output_tokens))
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.base_url = "https://api.openai.com/v1/responses"
+        self._unsupported_params: set[str] = set()
 
     def generate_reply(self, messages: list[dict[str, str]]) -> str:
         input_messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
@@ -48,34 +52,15 @@ class OpenAIService:
                 continue
             input_messages.append({"role": role, "content": trimmed})
 
-        payload = {
+        base_payload = {
             "model": self.model,
             "input": input_messages,
+        }
+        optional_payload = {
             "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
         }
-        request = Request(
-            self.base_url,
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
-        except HTTPError as exc:
-            message = self._extract_error_message(exc)
-            if exc.code == 401:
-                raise OpenAIServiceError("OpenAI API key is invalid.") from exc
-            if exc.code == 429:
-                raise OpenAIServiceError("OpenAI API rate limit reached.") from exc
-            raise OpenAIServiceError(f"OpenAI API request failed ({exc.code}): {message}") from exc
-        except URLError as exc:
-            raise OpenAIServiceError("Could not reach OpenAI API.") from exc
+        raw = self._request_with_adaptive_payload(base_payload, optional_payload)
 
         try:
             payload_data = json.loads(raw)
@@ -88,6 +73,71 @@ class OpenAIService:
         if not output:
             raise OpenAIServiceError("OpenAI API returned empty output.")
         return output
+
+    def _request_with_adaptive_payload(
+        self,
+        base_payload: dict[str, Any],
+        optional_payload: dict[str, Any],
+    ) -> str:
+        max_attempts = 4
+        for _attempt in range(max_attempts):
+            payload = dict(base_payload)
+            for key, value in optional_payload.items():
+                if key not in self._unsupported_params:
+                    payload[key] = value
+            request = Request(
+                self.base_url,
+                method="POST",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    return response.read().decode("utf-8")
+            except HTTPError as exc:
+                message = self._extract_error_message(exc)
+                if exc.code == 400:
+                    unsupported = self._extract_unsupported_parameter(message)
+                    if unsupported and unsupported in payload:
+                        if unsupported not in self._unsupported_params:
+                            self._unsupported_params.add(unsupported)
+                            logger.warning(
+                                "Model %s does not support parameter '%s'; "
+                                "retrying without it.",
+                                self.model,
+                                unsupported,
+                            )
+                            continue
+                if exc.code == 401:
+                    raise OpenAIServiceError("OpenAI API key is invalid.") from exc
+                if exc.code == 429:
+                    raise OpenAIServiceError("OpenAI API rate limit reached.") from exc
+                raise OpenAIServiceError(
+                    f"OpenAI API request failed ({exc.code}): {message}"
+                ) from exc
+            except URLError as exc:
+                raise OpenAIServiceError("Could not reach OpenAI API.") from exc
+
+        raise OpenAIServiceError(
+            "OpenAI API request failed: model rejected supported parameter set."
+        )
+
+    def _extract_unsupported_parameter(self, message: str) -> str | None:
+        patterns = (
+            r"Unsupported parameter:\s*'([^']+)'",
+            r"Unknown parameter:\s*'([^']+)'",
+            r"Parameter\s+'([^']+)'\s+is not supported",
+            r"'([^']+)'\s+is not supported with this model",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, message, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
 
     def _extract_error_message(self, exc: HTTPError) -> str:
         try:
