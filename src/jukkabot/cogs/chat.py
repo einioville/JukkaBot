@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -53,6 +54,37 @@ MAX_ATTACHMENT_BYTES = 256 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 3
 MAX_ATTACHMENT_TEXT_CHARS = 3500
 MAX_MESSAGE_CONTEXT_CHARS = 8000
+MAX_PARTICIPANTS_IN_MEMORY = 10
+GIF_CHANCE = 0.2
+GIF_COOLDOWN_SECONDS = 60
+MAX_MESSAGES_WITHOUT_BOT_REPLY = 6
+BRAINROT_GIF_URLS = (
+    "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcW0zbnNoOTI4Y2V3YjQ3azJmdGRob3YxY2MyYjBicW5mZG9kN3RzYiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/3o7aD2saalBwwftBIY/giphy.gif",
+    "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdjYwbnk1Y2Y5dTFrc2h5aXJhM3A2eG1sYjBvYjFkdzJnbnhwMWhqMCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l4FGpP4lxGGgK5CBW/giphy.gif",
+    "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExd3NpN3Vmd2wyZzVnYTRoN2V0OG8xN2NnZmxjOGM5N2E4YXF5aXVkNiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/13CoXDiaCcCoyk/giphy.gif",
+    "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWF4Mjh3Y2ptMDRvMWNuY2xha2RmOHMyc3A2MHhqeGZ2M3V2a2dubiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/11mwI67GLeMvgA/giphy.gif",
+    "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWN3NXU4Y2hwN3N6eDZ4bW1wajk2NnljcGc3M3djY3llMjI2M3cybiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/xT0xeJpnrWC4XWblEk/giphy.gif",
+)
+REPLY_TRIGGER_TOKENS = (
+    "bot",
+    "jukka",
+    "what",
+    "why",
+    "how",
+    "bruh",
+    "bro",
+    "wtf",
+    "lol",
+    "lmao",
+)
+
+
+@dataclass(slots=True)
+class ParticipantState:
+    display_name: str
+    message_count: int = 0
+    cooked_count: int = 0
+    last_message: str = ""
 
 
 @dataclass(slots=True)
@@ -60,6 +92,10 @@ class ChatSession:
     channel_id: int
     last_human_message_at: datetime
     history: deque[dict[str, str]] = field(default_factory=lambda: deque(maxlen=30))
+    participants: dict[int, ParticipantState] = field(default_factory=dict)
+    messages_since_last_reply: int = 0
+    last_bot_reply_at: datetime | None = None
+    last_gif_sent_at: datetime | None = None
 
 
 class ChatCog(commands.Cog):
@@ -112,7 +148,7 @@ class ChatCog(commands.Cog):
             app_commands.Choice(name="status", value="status"),
         ]
     )
-    async def chat(self, interaction: discord.Interaction, action: str) -> None:
+    async def chat(self, interaction: discord.Interaction, action: str = "on") -> None:
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message(
@@ -238,6 +274,70 @@ class ChatCog(commands.Cog):
             combined = f"{combined[:MAX_MESSAGE_CONTEXT_CHARS]}..."
         return combined
 
+    def _build_participant_memory(self, session: ChatSession) -> str:
+        if not session.participants:
+            return ""
+        ranked = sorted(
+            session.participants.values(),
+            key=lambda participant: (
+                participant.message_count,
+                participant.cooked_count,
+            ),
+            reverse=True,
+        )[:MAX_PARTICIPANTS_IN_MEMORY]
+        lines: list[str] = []
+        for participant in ranked:
+            last_message = participant.last_message.replace("\n", " ").strip()
+            if len(last_message) > 120:
+                last_message = f"{last_message[:117]}..."
+            lines.append(
+                f"- {participant.display_name}: messages={participant.message_count}, "
+                f"cooked={participant.cooked_count}, last=\"{last_message}\""
+            )
+        return "Conversation participants and memory:\n" + "\n".join(lines)
+
+    def _should_reply(
+        self,
+        message: discord.Message,
+        session: ChatSession,
+        prompt: str,
+        now: datetime,
+    ) -> bool:
+        if self.bot.user and any(user.id == self.bot.user.id for user in message.mentions):
+            return True
+        if message.reference and isinstance(message.reference.resolved, discord.Message):
+            referenced = message.reference.resolved
+            if referenced.author.id == self.bot.user.id:
+                return True
+
+        if session.messages_since_last_reply >= MAX_MESSAGES_WITHOUT_BOT_REPLY:
+            return True
+
+        chance = 0.15
+        lowered = prompt.casefold()
+        if "?" in prompt:
+            chance += 0.12
+        if any(token in lowered for token in REPLY_TRIGGER_TOKENS):
+            chance += 0.12
+        if session.messages_since_last_reply >= 3:
+            chance += 0.18
+        if session.last_bot_reply_at is None:
+            chance += 0.2
+        else:
+            silence = (now - session.last_bot_reply_at).total_seconds()
+            if silence >= 60:
+                chance += 0.1
+            if silence >= 180:
+                chance += 0.2
+        return random.random() < min(0.9, chance)
+
+    def _should_send_gif(self, session: ChatSession, now: datetime) -> bool:
+        if session.last_gif_sent_at is not None:
+            elapsed = (now - session.last_gif_sent_at).total_seconds()
+            if elapsed < GIF_COOLDOWN_SECONDS:
+                return False
+        return random.random() < GIF_CHANCE
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
@@ -253,6 +353,24 @@ class ChatCog(commands.Cog):
         prompt = await self._build_user_prompt(message)
         if not prompt:
             return
+        user_display_name = (
+            message.author.display_name
+            if isinstance(message.author, discord.Member)
+            else message.author.name
+        )
+        participant = session.participants.get(message.author.id)
+        if participant is None:
+            participant = ParticipantState(display_name=user_display_name)
+            session.participants[message.author.id] = participant
+        else:
+            participant.display_name = user_display_name
+        participant.message_count += 1
+        participant.last_message = prompt[:300]
+        session.messages_since_last_reply += 1
+
+        now = datetime.now(UTC)
+        if not self._should_reply(message, session, prompt, now):
+            return
 
         lock = self._reply_locks.setdefault(message.guild.id, asyncio.Lock())
         async with lock:
@@ -260,15 +378,13 @@ class ChatCog(commands.Cog):
             if active_session is None or active_session.channel_id != message.channel.id:
                 return
 
-            author_name = (
-                message.author.display_name
-                if isinstance(message.author, discord.Member)
-                else message.author.name
-            )
             active_session.history.append(
-                {"role": "user", "content": f"{author_name}: {prompt}"}
+                {"role": "user", "content": f"{user_display_name}: {prompt}"}
             )
             history = list(active_session.history)
+            memory_block = self._build_participant_memory(active_session)
+            if memory_block:
+                history = [{"role": "user", "content": memory_block}, *history]
             try:
                 async with message.channel.typing():
                     response_text = await asyncio.to_thread(
@@ -297,6 +413,22 @@ class ChatCog(commands.Cog):
                 )
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
+            else:
+                active_session.messages_since_last_reply = 0
+                active_session.last_bot_reply_at = datetime.now(UTC)
+                target = active_session.participants.get(message.author.id)
+                if target is not None:
+                    target.cooked_count += 1
+                if self._should_send_gif(active_session, active_session.last_bot_reply_at):
+                    try:
+                        await message.channel.send(
+                            random.choice(BRAINROT_GIF_URLS),
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+                    else:
+                        active_session.last_gif_sent_at = datetime.now(UTC)
 
     @tasks.loop(seconds=30)
     async def chat_idle_watchdog(self) -> None:

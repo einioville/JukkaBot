@@ -38,8 +38,10 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - active equalizer/filter preset per guild
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 - Chat mode:
-  - `/chat on` enables AI chat in the current guild/channel
+  - `/chat` or `/chat on` enables AI chat in the current guild/channel
   - Reads supported text attachments from messages and uses them as context
+  - Reviews channel messages and decides when to reply (no mention required)
+  - Occasionally sends brainrot GIF links
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
   - `/chat off` disables immediately, `/chat status` shows active channel + idle timer
 
@@ -97,8 +99,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 ```json
 {
   "chat": {
-    "system_prompt": "You are JukkaBot, friendly and natural. Keep replies concise.",
-    "system_prompt_file": "resources/prompts/chat_system.txt"
+    "system_prompt": "Fallback prompt if file-based prompt is missing.",
+    "system_prompt_file": "resources/prompts/ragebait_chat_prompt.txt"
   }
 }
 ```
