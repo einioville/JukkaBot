@@ -17,6 +17,7 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are JukkaBot, a natural and friendly Discord chat participant. "
     "Keep responses concise and conversational."
 )
+EMPTY_OUTPUT_FALLBACK_REPLY = "nah this is insane :D"
 
 
 class OpenAIService:
@@ -57,7 +58,6 @@ class OpenAIService:
             "input": input_messages,
         }
         optional_payload = {
-            "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
         }
         raw = self._request_with_adaptive_payload(base_payload, optional_payload)
@@ -70,9 +70,19 @@ class OpenAIService:
             raise OpenAIServiceError("Unexpected OpenAI response shape.")
 
         output = self._extract_output_text(payload_data)
-        if not output:
-            raise OpenAIServiceError("OpenAI API returned empty output.")
-        return output
+        if output:
+            return output
+
+        reason = self._extract_non_text_reason(payload_data)
+        if reason:
+            logger.warning(
+                "OpenAI API returned non-text output for model %s: %s",
+                self.model,
+                reason,
+            )
+        else:
+            logger.warning("OpenAI API returned empty output for model %s", self.model)
+        return EMPTY_OUTPUT_FALLBACK_REPLY
 
     def _request_with_adaptive_payload(
         self,
@@ -179,3 +189,45 @@ class OpenAIService:
                         parts.append(text.strip())
 
         return "\n".join(parts).strip()
+
+    def _extract_non_text_reason(self, payload_data: dict[str, Any]) -> str | None:
+        status = payload_data.get("status")
+        if status == "incomplete":
+            details = payload_data.get("incomplete_details")
+            if isinstance(details, dict):
+                reason = details.get("reason")
+                if isinstance(reason, str) and reason.strip():
+                    return f"incomplete:{reason.strip()}"
+            return "incomplete"
+
+        output = payload_data.get("output")
+        if not isinstance(output, list):
+            return None
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "refusal":
+                summary = item.get("summary")
+                if isinstance(summary, list) and summary:
+                    first = summary[0]
+                    if isinstance(first, dict):
+                        text = first.get("text")
+                        if isinstance(text, str) and text.strip():
+                            return f"refusal:{text.strip()[:120]}"
+                return "refusal"
+            if item_type != "message":
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "refusal":
+                    text = block.get("refusal")
+                    if isinstance(text, str) and text.strip():
+                        return f"refusal:{text.strip()[:120]}"
+                    return "refusal"
+        return None

@@ -97,6 +97,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Chat system prompt is stored in `config.json` under `chat.system_prompt`.
 - Optional: `chat.system_prompt_file` can point to a prompt file inside the project.
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
+- `temperature` parameter is currently not sent to the API (temporary compatibility mode).
 
 ### Chat Prompt Config
 ```json

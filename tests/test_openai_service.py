@@ -6,7 +6,11 @@ from urllib.error import HTTPError
 
 import pytest
 
-from jukkabot.openai_service import OpenAIService, OpenAIServiceError
+from jukkabot.openai_service import (
+    EMPTY_OUTPUT_FALLBACK_REPLY,
+    OpenAIService,
+    OpenAIServiceError,
+)
 
 
 class _FakeResponse:
@@ -70,7 +74,7 @@ def test_generate_reply_retries_without_unsupported_parameter(
                 msg="Bad Request",
                 hdrs=None,
                 fp=io.BytesIO(
-                    b'{"error":{"message":"Unsupported parameter: \'temperature\' is not supported with this model."}}'
+                    b'{"error":{"message":"Unsupported parameter: \'max_output_tokens\' is not supported with this model."}}'
                 ),
             )
         return _FakeResponse({"output_text": "Recovered"})
@@ -79,5 +83,20 @@ def test_generate_reply_retries_without_unsupported_parameter(
     reply = service.generate_reply([{"role": "user", "content": "Hi"}])
 
     assert reply == "Recovered"
-    assert "temperature" in payloads[0]
-    assert "temperature" not in payloads[1]
+    assert "max_output_tokens" in payloads[0]
+    assert "max_output_tokens" not in payloads[1]
+    assert "temperature" not in payloads[0]
+
+
+def test_generate_reply_falls_back_on_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        return _FakeResponse({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply([{"role": "user", "content": "Hi"}])
+
+    assert reply == EMPTY_OUTPUT_FALLBACK_REPLY

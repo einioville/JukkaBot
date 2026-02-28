@@ -73,6 +73,7 @@
   - `chat.system_prompt`
   - `chat.system_prompt_file` (project-relative prompt file path)
   - `chat.user_facts` (persisted per guild/user facts memory)
+- Runtime compatibility: if a model rejects optional parameters, they are auto-disabled and retried.
 
 # Architecture
 - Code lives under `src/`.
