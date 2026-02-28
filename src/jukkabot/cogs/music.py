@@ -109,6 +109,8 @@ class MusicCog(commands.Cog):
         self.music_service = music_service
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
+        self.autocomplete_cache_ttl = timedelta(seconds=8)
+        self._autocomplete_cache: dict[tuple[int, str], tuple[datetime, list[Track]]] = {}
         self.idle_disconnect.start()
 
     def cog_unload(self) -> None:
@@ -120,6 +122,30 @@ class MusicCog(commands.Cog):
     def _clear_guild_voice_state(self, guild_id: int) -> None:
         self.queue_manager.clear(guild_id)
         self.last_active_by_guild.pop(guild_id, None)
+
+    def _cache_autocomplete_results(
+        self, cache_key: tuple[int, str], tracks: list[Track]
+    ) -> None:
+        now = datetime.now(UTC)
+        self._autocomplete_cache[cache_key] = (now, tracks)
+        if len(self._autocomplete_cache) <= 300:
+            return
+
+        stale_before = now - self.autocomplete_cache_ttl
+        self._autocomplete_cache = {
+            key: value
+            for key, value in self._autocomplete_cache.items()
+            if value[0] >= stale_before
+        }
+        if len(self._autocomplete_cache) <= 300:
+            return
+
+        newest = sorted(
+            self._autocomplete_cache.items(),
+            key=lambda item: item[1][0],
+            reverse=True,
+        )[:300]
+        self._autocomplete_cache = dict(newest)
 
     def _youtube_thumbnail(self, track: Track) -> str | None:
         if track.thumbnail_url:
@@ -486,13 +512,22 @@ class MusicCog(commands.Cog):
     async def play_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        if len(current.strip()) < 2:
+        query = current.strip()
+        if len(query) < 2:
             return []
-        await asyncio.sleep(0.5)
+
+        cache_key = (interaction.guild_id or 0, query.casefold())
+        now = datetime.now(UTC)
+        cache_item = self._autocomplete_cache.get(cache_key)
         try:
-            tracks = self.music_service.search(current)
+            if cache_item is not None and now - cache_item[0] <= self.autocomplete_cache_ttl:
+                tracks = cache_item[1]
+            else:
+                tracks = await asyncio.to_thread(self.music_service.search, query)
+                self._cache_autocomplete_results(cache_key, tracks)
         except Exception:
             return []
+
         choices: list[app_commands.Choice[str]] = []
         seen_values: set[str] = set()
         for track in tracks:
