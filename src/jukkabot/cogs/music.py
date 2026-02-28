@@ -138,7 +138,7 @@ class MusicCog(commands.Cog):
         old_message = channel.get_partial_message(state.now_playing_message_id)
         try:
             await old_message.delete()
-        except (discord.NotFound, discord.Forbidden):
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
         finally:
             state.now_playing_message_id = None
@@ -412,13 +412,17 @@ class MusicCog(commands.Cog):
         if voice is None:
             return
         if not voice.is_connected():
-            self._clear_guild_voice_state(guild.id)
+            await self._cleanup_after_disconnect(guild, fallback_channel_id)
             return
         if voice.is_playing() or voice.is_paused():
             return
 
         channel = self._resolve_announce_channel(guild, fallback_channel_id)
         while True:
+            if not voice.is_connected():
+                await self._cleanup_after_disconnect(guild, fallback_channel_id)
+                return
+
             track = self.queue_manager.pop_next(guild.id)
             if track is None:
                 self._touch_activity(guild.id)
@@ -432,6 +436,9 @@ class MusicCog(commands.Cog):
                 self.queue_manager.finish_current(guild.id, add_to_history=False)
                 if channel is not None:
                     await channel.send(f"Failed to play **{track.title}**: {exc}")
+                if not voice.is_connected():
+                    await self._cleanup_after_disconnect(guild, fallback_channel_id)
+                    return
 
     async def _start_if_needed(
         self, guild: discord.Guild, channel_id: int | None = None
