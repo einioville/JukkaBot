@@ -17,18 +17,25 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/stats`: Tracker stats command (currently disabled until Tracker app approval)
 - Per-server queue, history, and moderation state.
 - Tracks store who queued them.
+- `/play` autocomplete uses trailing debounce (500 ms) and does not cache results.
 - Now-playing embed includes:
   - playing/paused status
   - title, author, length, queued-by
   - video image
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
-  - previous, next, pause/resume, shuffle
+  - previous, next, pause/resume, shuffle, stop
+- Control interactions edit the existing now-playing message (no extra feedback messages).
 - Audio filter presets available:
   - off, hiphop, edm, dance, vocal, pop, rock, trebleboost
 - Bass level is configured only through `/bass level:<0..20>` (required argument).
-- Queue and now-playing cleanup when bot leaves or gets disconnected.
+- Filter changes are applied mid-playback by restarting from the current playback position.
+- Queue and now-playing cleanup when bot leaves, is disconnected, or is kicked.
 - Auto-disconnect after 5 minutes of idle playback state (not playing, not paused, no current track, empty queue).
+- Persistent config in project-root `config.json`:
+  - banned users per guild
+  - active equalizer/filter preset per guild
+- Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 
 ## Project Layout
 - `src/jukkabot/`: main bot package
@@ -38,7 +45,11 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - `tests/`: tests
 
 ## Setup
-1. Create and activate a virtual environment.
+1. Create and activate a virtual environment:
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
 2. Install dependencies:
    ```powershell
    pip install -e . pytest
@@ -64,3 +75,4 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 
 ## Notes
 - `/stats` is intentionally disabled in code (`TRACKER_STATS_ENABLED = False`) until Tracker approves API access for the app.
+- If slash commands do not appear, confirm bot invite has `applications.commands` scope and wait for Discord command propagation after restart/sync.

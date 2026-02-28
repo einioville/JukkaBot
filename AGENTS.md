@@ -1,68 +1,62 @@
 # Description
-- Target is to make a discord bot that is capable of playing music from youtube
-- Language used is Python
+- Target: Discord bot that plays music from YouTube.
+- Language: Python.
 
-# Features
-- Use slash "/" -commands to run commands
-- All features are per server and should be managed so that they can be identified by the server
+# Core Rules
+- Use slash (`/`) commands.
+- All state must be per guild/server.
+- Access rule for voice commands:
+1. If bot is not connected to voice, allow command.
+2. If bot is connected, user must be in the same voice channel.
 
-## Commands
-- Running every command should follow this procedure before being ran:
-1. If bot is not playing or joined a channel proceed to the command
-2. If bot is at a channel and the user is at the same channel proceed to the command
+# Commands (Current State)
+- `/join`: join user voice channel; do not switch if bot is active with humans in another channel.
+- `/play`: search + queue track, auto-join user channel if needed.
+  - Autocomplete uses trailing debounce (500ms after user stops typing).
+  - No autocomplete result caching.
+- `/skip`: skip current track.
+- `/pause`: toggle pause/resume.
+- `/clear`: clear queue/history/current track and delete now-playing message.
+- `/leave`: disconnect from voice and clear queue/history/current state.
+- `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
+- `/bass`: apply bass boost with required `level` option (`0..20`).
+- `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
+- `/stats`: Tracker Network stats command exists but is disabled until Tracker app approval.
 
-### play
-- Writing "/play" to the chat opens a query where user is asked for track name
-  - When user types to the box there is a 2 second threshold, after triggered the bot searches youtube with the text currently written by the user and suggests songs to be played
-- If there is no tracks playing the bot tries to join the channel the user is currently in
-  - If this fails, it outputs a message to the user telling the issue
-- If there is tracks playing and in the queue the bot checks if the user is in the same channel as the bot
-  - If yes, the bot adds the requested song to the queue
-  - If not, the bot tells the user that it needs to be in the same voice channel as the bot
-- If i missed something remind me. The play command should act the same as in Spotify for example
+# Queue and Playback
+- Queue is per guild.
+- Each queued track stores who queued it (user id + display name).
+- Previous tracks are kept in history.
+- Filter changes should apply during playback by restarting stream near current elapsed position.
 
+# Now Playing Message
+- Old now-playing message is removed when a new track starts.
+- Embed content:
+  - Title: `JukkaBot - Playing` or `JukkaBot - Paused`
+  - Name, author, length, queued by
+  - Video thumbnail image
+  - `Coming Next` section only when queue has items
+- Button controls (same style):
+  - Previous, next, pause/resume, shuffle, stop
+- Button actions should update/edit existing now-playing message and avoid extra feedback spam.
 
-### Join
-- Try to join the channel the user is currently
-  - If this fails tell the user
-- If bot is currently at any channel don't switch channels
-  - Only switch if the bot is alone in a channel
-    - Notify user about this
-  - Ignore if the user is at same channel as the bot already
+# Automation
+- Leave voice after 5 minutes idle playback state:
+  - not playing
+  - not paused
+  - no current track
+  - empty queue
+- If bot is kicked/disconnected/leaves, clear queue state and delete now-playing message.
 
-### skip
-- skips the song if bot is currently playing
-- User needs to be on the same channel as the bot
+# Persistence
+- Persist minimal per-guild config to root `config.json` on shutdown:
+  - banned users
+  - active equalizer/filter
+- `config.json` is gitignored.
 
-### banuser
-- This command can be only executed by me and the admins of the server
-- Bans specific user from queueing and skipping songs
+# Architecture
+- Code lives under `src/`.
+- Keep queue logic, service integrations, and command/cog logic separated.
 
-### unbanuser
-- Similar as the banuser, but does the opposite
-
-## Automation
-- If the bot is only user in the channel leave after 5 minutes of inactivity
-
-## Queue system
-- Queue system should be per server and it works similar to spotifys and other streaming platform
-
-## currenly playing message
-- Remove the last "currently playing" message before sending new one
-- Displays the thumbnail, title, author, lenght of the currently played media and the name of the next track
-- Add reaction buttons to:
-  - Seek last and next track
-    - If media has been played more than 5 seconds the last media starts the current media from start
-    - When going to previous track, put the current media back to the queue
-  - pause
-  - shuffle queue
-  - loop the current track
-
-# Architecure
-- src/ holds the code
-- Organize things into different files
-  - For example queue system, currently playing generator etc. to different files.
-- I will fix the structure later and you can update this
-
-# Other instructions
-- Always commit the changes you made
+# Other Instructions
+- Always commit changes made.
