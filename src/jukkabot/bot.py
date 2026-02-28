@@ -34,6 +34,7 @@ class JukkaBot(commands.Bot):
             else None
         )
         self.chat_system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        self.chat_system_prompt_file: str | None = None
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
         self._load_persistent_config()
@@ -62,22 +63,57 @@ class JukkaBot(commands.Bot):
             return
         chat = payload.get("chat")
         if isinstance(chat, dict):
+            system_prompt_file = chat.get("system_prompt_file")
+            if isinstance(system_prompt_file, str) and system_prompt_file.strip():
+                prompt_text = self._load_chat_prompt_from_project_file(system_prompt_file.strip())
+                if prompt_text:
+                    self.chat_system_prompt_file = system_prompt_file.strip()
+                    self.chat_system_prompt = prompt_text
             system_prompt = chat.get("system_prompt")
-            if isinstance(system_prompt, str) and system_prompt.strip():
+            if (
+                isinstance(system_prompt, str)
+                and system_prompt.strip()
+                and self.chat_system_prompt == DEFAULT_CHAT_SYSTEM_PROMPT
+            ):
                 self.chat_system_prompt = system_prompt.strip()
         guilds = payload.get("guilds")
         if isinstance(guilds, dict):
             self.queue_manager.load_persistent_state(guilds)
+
+    def _load_chat_prompt_from_project_file(self, path_value: str) -> str | None:
+        relative_path = Path(path_value)
+        if relative_path.is_absolute():
+            logging.warning("Ignoring absolute chat.system_prompt_file path: %s", path_value)
+            return None
+        project_root = self.config_path.parent.resolve()
+        candidate = (project_root / relative_path).resolve()
+        try:
+            candidate.relative_to(project_root)
+        except ValueError:
+            logging.warning("Ignoring chat.system_prompt_file outside project root: %s", path_value)
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            logging.warning("Chat prompt file does not exist: %s", candidate)
+            return None
+        try:
+            text = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            logging.exception("Failed reading chat prompt file: %s", candidate)
+            return None
+        return text or None
 
     def _save_persistent_config(self) -> None:
         if self.openai_service is not None:
             self.chat_system_prompt = (
                 self.openai_service.system_prompt.strip() or DEFAULT_CHAT_SYSTEM_PROMPT
             )
+        chat_payload: dict[str, str] = {
+            "system_prompt": self.chat_system_prompt,
+        }
+        if self.chat_system_prompt_file:
+            chat_payload["system_prompt_file"] = self.chat_system_prompt_file
         payload = {
-            "chat": {
-                "system_prompt": self.chat_system_prompt,
-            },
+            "chat": chat_payload,
             "guilds": self.queue_manager.to_persistent_state(),
         }
         temp_path = self.config_path.with_suffix(".json.tmp")

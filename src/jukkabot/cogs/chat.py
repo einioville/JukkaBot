@@ -5,6 +5,7 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -13,6 +14,45 @@ from discord.ext import commands, tasks
 from jukkabot.openai_service import OpenAIService, OpenAIServiceError
 
 logger = logging.getLogger(__name__)
+TEXT_ATTACHMENT_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".rst",
+    ".log",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".csv",
+    ".xml",
+    ".html",
+    ".htm",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".php",
+    ".rb",
+    ".sql",
+    ".sh",
+    ".ps1",
+    ".bat",
+}
+MAX_ATTACHMENT_BYTES = 256 * 1024
+MAX_ATTACHMENTS_PER_MESSAGE = 3
+MAX_ATTACHMENT_TEXT_CHARS = 3500
+MAX_MESSAGE_CONTEXT_CHARS = 8000
 
 
 @dataclass(slots=True)
@@ -152,6 +192,52 @@ class ChatCog(commands.Cog):
             ephemeral=True,
         )
 
+    def _is_supported_text_attachment(self, attachment: discord.Attachment) -> bool:
+        content_type = (attachment.content_type or "").casefold()
+        if content_type.startswith("text/"):
+            return True
+        suffix = Path(attachment.filename).suffix.casefold()
+        return suffix in TEXT_ATTACHMENT_EXTENSIONS
+
+    async def _build_user_prompt(self, message: discord.Message) -> str:
+        parts: list[str] = []
+        base_text = message.content.strip()
+        if base_text:
+            parts.append(base_text)
+
+        for attachment in message.attachments[:MAX_ATTACHMENTS_PER_MESSAGE]:
+            if attachment.size > MAX_ATTACHMENT_BYTES:
+                parts.append(
+                    f"[Attachment omitted: {attachment.filename} is larger than "
+                    f"{MAX_ATTACHMENT_BYTES // 1024}KB]"
+                )
+                continue
+            if not self._is_supported_text_attachment(attachment):
+                parts.append(
+                    f"[Attachment omitted: {attachment.filename} is not a supported text file]"
+                )
+                continue
+
+            try:
+                data = await attachment.read()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                parts.append(f"[Attachment omitted: failed to read {attachment.filename}]")
+                continue
+
+            text = data.decode("utf-8", errors="replace").strip()
+            if not text:
+                parts.append(f"[Attachment note: {attachment.filename} is empty]")
+                continue
+            if len(text) > MAX_ATTACHMENT_TEXT_CHARS:
+                text = f"{text[:MAX_ATTACHMENT_TEXT_CHARS]}..."
+
+            parts.append(f"[Attachment: {attachment.filename}]\n{text}")
+
+        combined = "\n\n".join(parts).strip()
+        if len(combined) > MAX_MESSAGE_CONTEXT_CHARS:
+            combined = f"{combined[:MAX_MESSAGE_CONTEXT_CHARS]}..."
+        return combined
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
@@ -164,7 +250,7 @@ class ChatCog(commands.Cog):
             return
 
         session.last_human_message_at = datetime.now(UTC)
-        prompt = message.content.strip()
+        prompt = await self._build_user_prompt(message)
         if not prompt:
             return
 

@@ -21,6 +21,7 @@
 - `/chat`: chat mode for current channel (`on`, `off`, `status`).
   - One active chat channel per guild.
   - Auto-disable after 5 minutes of quiet.
+  - Uses message text and supported text attachments as context.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
@@ -67,6 +68,7 @@
   - `CHAT_IDLE_TIMEOUT_SECONDS`
 - Configure prompt via `config.json`:
   - `chat.system_prompt`
+  - `chat.system_prompt_file` (project-relative prompt file path)
 
 # Architecture
 - Code lives under `src/`.
