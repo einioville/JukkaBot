@@ -263,6 +263,13 @@ class MusicCog(commands.Cog):
         state.skip_requested = True
         if voice.is_playing() or voice.is_paused():
             voice.stop()
+            return True
+
+        # Fallback path: voice client can be connected but no active player.
+        # Mark current as skipped and advance to the next queued track.
+        self.queue_manager.finish_current(guild.id, add_to_history=False)
+        state.skip_requested = False
+        await self._play_next(guild)
         return True
 
     async def _play_previous(self, guild: discord.Guild) -> bool:
@@ -358,20 +365,21 @@ class MusicCog(commands.Cog):
         if voice.is_playing() or voice.is_paused():
             return
 
-        track = self.queue_manager.pop_next(guild.id)
-        if track is None:
-            self._touch_activity(guild.id)
-            return
-
         channel = self._resolve_announce_channel(guild, fallback_channel_id)
-        try:
-            await self._play_track(guild, voice, track, channel)
-        except Exception as exc:
-            logger.exception("Failed to start track in guild %s", guild.id)
-            self.queue_manager.finish_current(guild.id, add_to_history=False)
-            if channel is not None:
-                await channel.send(f"Failed to play **{track.title}**: {exc}")
-            await self._play_next(guild, fallback_channel_id)
+        while True:
+            track = self.queue_manager.pop_next(guild.id)
+            if track is None:
+                self._touch_activity(guild.id)
+                return
+
+            try:
+                await self._play_track(guild, voice, track, channel)
+                return
+            except Exception as exc:
+                logger.exception("Failed to start track in guild %s", guild.id)
+                self.queue_manager.finish_current(guild.id, add_to_history=False)
+                if channel is not None:
+                    await channel.send(f"Failed to play **{track.title}**: {exc}")
 
     async def _start_if_needed(
         self, guild: discord.Guild, channel_id: int | None = None
