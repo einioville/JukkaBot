@@ -28,7 +28,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - video image
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
-  - previous, next, pause/resume, shuffle, stop
+  - previous, next, pause/resume, shuffle, repeat, stop
+  - repeat loops the currently playing track until toggled off
   - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
 - Control interactions edit the existing now-playing message (no extra feedback messages).
 - Audio filter presets available:
@@ -53,6 +54,11 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - Occasionally sends brainrot GIF links
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
   - `/chat action:off` disables immediately
+  - Uses OpenAI web search tools when supported by the selected chat model
+- Image generation:
+  - `/image prompt:<text>` for text-to-image generation
+  - `/image prompt:<text> reference_image:<attachment>` for reference/edit flows
+  - Image generation uses a separate image model and a longer timeout (default 120s)
 
 ## Project Layout
 - `src/jukkabot/`: main bot package
@@ -79,6 +85,9 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
     - `ADMIN_USER_IDS` (optional, comma-separated user IDs; invalid entries are ignored)
    - `OPENAI_API_KEY` (required for `/chat on`)
    - `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
+   - `OPENAI_IMAGE_MODEL` (optional, default `gpt-image-1`)
+   - `OPENAI_TIMEOUT_SECONDS` (optional, default `30`)
+   - `OPENAI_IMAGE_TIMEOUT_SECONDS` (optional, default `120`)
    - `CHAT_TEMPERATURE` (optional, default `0.8`)
    - `CHAT_MAX_OUTPUT_TOKENS` (optional, default `220`)
    - `CHAT_IDLE_TIMEOUT_SECONDS` (optional, default `300`)
@@ -106,6 +115,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Prompt files under `resources/prompts/*.txt` are ignored by git; keep your personal prompt there locally.
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
 - OpenAI timeouts are retried automatically with short backoff.
+- Image API requests use `OPENAI_IMAGE_TIMEOUT_SECONDS` and log using the image model name.
+- Chat and image commands currently do not have per-user or per-guild rate limits (recommended for production to control API costs).
 
 ### Chat Prompt Config
 ```json

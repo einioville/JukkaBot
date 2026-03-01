@@ -43,6 +43,7 @@ class OpenAIService:
         temperature: float = 0.8,
         max_output_tokens: int = 220,
         timeout_seconds: int = 30,
+        image_timeout_seconds: int = 120,
         enable_web_search: bool = True,
         image_model: str = "gpt-image-1",
     ) -> None:
@@ -52,6 +53,7 @@ class OpenAIService:
         self.temperature = max(0.0, min(2.0, float(temperature)))
         self.max_output_tokens = max(1, int(max_output_tokens))
         self.timeout_seconds = max(1, int(timeout_seconds))
+        self.image_timeout_seconds = max(30, int(image_timeout_seconds))
         self.enable_web_search = bool(enable_web_search)
         self.image_model = image_model.strip() or "gpt-image-1"
         self.base_url = "https://api.openai.com/v1/responses"
@@ -135,6 +137,8 @@ class OpenAIService:
             raw = self._request_json(
                 "https://api.openai.com/v1/images/generations",
                 payload,
+                timeout_seconds=self.image_timeout_seconds,
+                model_name=self.image_model,
             )
             return self._parse_generated_image(raw)
 
@@ -165,6 +169,8 @@ class OpenAIService:
             "https://api.openai.com/v1/images/edits",
             fields,
             files,
+            timeout_seconds=self.image_timeout_seconds,
+            model_name=self.image_model,
         )
         return self._parse_generated_image(raw)
 
@@ -207,7 +213,10 @@ class OpenAIService:
 
         image_url = first.get("url")
         if isinstance(image_url, str) and image_url.strip():
-            image_bytes, mime_type = self._download_binary(image_url)
+            image_bytes, mime_type = self._download_binary(
+                image_url,
+                timeout_seconds=self.image_timeout_seconds,
+            )
             return GeneratedImage(
                 image_bytes=image_bytes,
                 mime_type=mime_type,
@@ -215,7 +224,14 @@ class OpenAIService:
             )
         raise OpenAIServiceError("Image API response did not include image bytes.")
 
-    def _request_json(self, url: str, payload: dict[str, Any]) -> str:
+    def _request_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: int,
+        model_name: str,
+    ) -> str:
         body = json.dumps(payload).encode("utf-8")
 
         def build_request() -> Request:
@@ -229,13 +245,20 @@ class OpenAIService:
                 },
             )
 
-        return self._request_with_retries(build_request)
+        return self._request_with_retries(
+            build_request,
+            timeout_seconds=timeout_seconds,
+            model_name=model_name,
+        )
 
     def _request_multipart(
         self,
         url: str,
         fields: list[tuple[str, str]],
         files: list[tuple[str, str, str, bytes]],
+        *,
+        timeout_seconds: int,
+        model_name: str,
     ) -> str:
         body, content_type = self._build_multipart_body(fields, files)
 
@@ -250,14 +273,24 @@ class OpenAIService:
                 },
             )
 
-        return self._request_with_retries(build_request)
+        return self._request_with_retries(
+            build_request,
+            timeout_seconds=timeout_seconds,
+            model_name=model_name,
+        )
 
-    def _request_with_retries(self, build_request: Callable[[], Request]) -> str:
+    def _request_with_retries(
+        self,
+        build_request: Callable[[], Request],
+        *,
+        timeout_seconds: int,
+        model_name: str,
+    ) -> str:
         max_attempts = MAX_API_RETRIES
         for _attempt in range(max_attempts):
             request = build_request()
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
+                with urlopen(request, timeout=timeout_seconds) as response:
                     return response.read().decode("utf-8")
             except HTTPError as exc:
                 message = self._extract_error_message(exc)
@@ -274,7 +307,7 @@ class OpenAIService:
                     logger.warning(
                         "OpenAI API request timed out for model %s (attempt %s/%s); "
                         "retrying in %.1fs.",
-                        self.model,
+                        model_name,
                         _attempt + 1,
                         max_attempts,
                         delay,
@@ -290,7 +323,7 @@ class OpenAIService:
                         logger.warning(
                             "OpenAI API network timeout for model %s (attempt %s/%s); "
                             "retrying in %.1fs.",
-                            self.model,
+                            model_name,
                             _attempt + 1,
                             max_attempts,
                             delay,
@@ -340,10 +373,13 @@ class OpenAIService:
         body = b"".join(lines)
         return body, f"multipart/form-data; boundary={boundary}"
 
-    def _download_binary(self, url: str) -> tuple[bytes, str]:
+    def _download_binary(
+        self, url: str, *, timeout_seconds: int | None = None
+    ) -> tuple[bytes, str]:
         request = Request(url, method="GET")
+        timeout = self.timeout_seconds if timeout_seconds is None else max(1, timeout_seconds)
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout) as response:
                 image_bytes = response.read()
                 content_type_header = response.headers.get("Content-Type", "")
         except (HTTPError, URLError, TimeoutError, socket.timeout) as exc:

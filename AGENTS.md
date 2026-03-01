@@ -21,10 +21,13 @@
 - `/chat`: chat mode for current channel (`on`, `off`).
   - One active chat channel per guild.
   - Auto-disable after 5 minutes of quiet.
-  - Uses all channel messages as context; text attachments are read only when the bot is mentioned.
+  - Uses all channel messages as context; text/image attachments are read only when the bot is mentioned.
   - Replies only when the bot is mentioned.
   - Can occasionally send brainrot GIF links.
   - Supports dynamic-memory updates only when mentioned and message starts with `Muista: ...` (leading bot mention ignored in that check).
+- `/image`: generate images from prompt text, optionally with a reference/edit image attachment.
+  - Reference image types: `png`, `jpg`, `jpeg`, `webp`, `gif`.
+  - Reference image size limit: 6 MB.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
@@ -44,7 +47,10 @@
   - Video thumbnail image
   - `Coming Next` section only when queue has items
 - Button controls (same style):
-  - Previous, next, pause/resume, shuffle, stop
+  - Previous, next, pause/resume, shuffle, repeat, stop
+  - Repeat behavior:
+    - If repeat is enabled, current track loops until repeat is disabled.
+    - Repeat button active color should match now-playing green (Spotify green).
   - Previous behavior:
     - If current track elapsed time > 5s, restart current track from beginning.
     - Otherwise move to previous track and put current track back at the front of queue.
@@ -69,9 +75,13 @@
 - Configure via `.env`:
   - `OPENAI_API_KEY`
   - `OPENAI_MODEL`
+  - `OPENAI_IMAGE_MODEL`
+  - `OPENAI_TIMEOUT_SECONDS`
+  - `OPENAI_IMAGE_TIMEOUT_SECONDS`
   - `CHAT_TEMPERATURE`
   - `CHAT_MAX_OUTPUT_TOKENS`
   - `CHAT_IDLE_TIMEOUT_SECONDS`
+  - `CHAT_ENABLE_WEB_SEARCH`
 - Configure prompt via `config.json`:
   - `chat.system_prompt_file` (project-relative prompt file path)
   - `chat.user_facts` (persisted per guild/user facts memory)

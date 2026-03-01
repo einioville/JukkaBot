@@ -271,12 +271,18 @@ def test_generate_reply_sends_image_input_blocks(monkeypatch: pytest.MonkeyPatch
 def test_generate_image_uses_generations_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = OpenAIService(api_key="fake")
+    service = OpenAIService(
+        api_key="fake",
+        image_model="gpt-image-1",
+        image_timeout_seconds=120,
+    )
     calls: list[dict[str, object]] = []
+    timeouts: list[int | float] = []
     image_payload = base64.b64encode(b"image-bytes").decode("ascii")
 
     def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
         assert request.full_url == "https://api.openai.com/v1/images/generations"
+        timeouts.append(timeout)
         calls.append(json.loads(request.data.decode("utf-8")))
         return _FakeResponse({"data": [{"b64_json": image_payload}]})
 
@@ -287,6 +293,7 @@ def test_generate_image_uses_generations_endpoint(
     assert calls[0]["model"] == "gpt-image-1"
     assert calls[0]["prompt"] == "A red car in snow"
     assert calls[0]["size"] == "1024x1024"
+    assert timeouts == [120]
     assert result.image_bytes == b"image-bytes"
     assert result.mime_type == "image/png"
 

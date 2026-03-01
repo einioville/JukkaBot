@@ -14,6 +14,9 @@ class Settings:
     tracker_api_key: str | None
     openai_api_key: str | None
     openai_model: str
+    openai_image_model: str
+    openai_timeout_seconds: int
+    openai_image_timeout_seconds: int
     chat_temperature: float
     chat_max_output_tokens: int
     chat_idle_timeout_seconds: int
@@ -77,6 +80,9 @@ def load_settings() -> Settings:
     ) or None
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
     openai_model = os.getenv("OPENAI_MODEL", "").strip() or "gpt-4.1-mini"
+    openai_image_model = os.getenv("OPENAI_IMAGE_MODEL", "").strip() or "gpt-image-1"
+    openai_timeout_seconds = _env_int("OPENAI_TIMEOUT_SECONDS", 30, minimum=1)
+    openai_image_timeout_seconds = _env_int("OPENAI_IMAGE_TIMEOUT_SECONDS", 120, minimum=30)
     chat_temperature = _env_float("CHAT_TEMPERATURE", 0.8, 0.0, 2.0)
     chat_max_output_tokens = _env_int("CHAT_MAX_OUTPUT_TOKENS", 220, minimum=1)
     chat_idle_timeout_seconds = _env_int("CHAT_IDLE_TIMEOUT_SECONDS", 300, minimum=60)
@@ -88,6 +94,9 @@ def load_settings() -> Settings:
         tracker_api_key=tracker_api_key,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        openai_image_model=openai_image_model,
+        openai_timeout_seconds=openai_timeout_seconds,
+        openai_image_timeout_seconds=openai_image_timeout_seconds,
         chat_temperature=chat_temperature,
         chat_max_output_tokens=chat_max_output_tokens,
         chat_idle_timeout_seconds=chat_idle_timeout_seconds,

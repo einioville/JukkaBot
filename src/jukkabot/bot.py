@@ -51,9 +51,12 @@ class JukkaBot(commands.Bot):
             self.openai_service = OpenAIService(
                 api_key=settings.openai_api_key,
                 model=settings.openai_model,
+                image_model=settings.openai_image_model,
                 system_prompt=self.chat_system_prompt,
                 temperature=settings.chat_temperature,
                 max_output_tokens=settings.chat_max_output_tokens,
+                timeout_seconds=settings.openai_timeout_seconds,
+                image_timeout_seconds=settings.openai_image_timeout_seconds,
                 enable_web_search=settings.chat_enable_web_search,
             )
 
