@@ -28,7 +28,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - video image
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
-  - previous, next, pause/resume, shuffle, repeat, stop
+  - previous, next, pause/resume, repeat, stop
+  - shuffle logic exists but is currently hidden from now-playing controls
   - repeat loops the currently playing track until toggled off
   - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
 - Control interactions edit the existing now-playing message (no extra feedback messages).

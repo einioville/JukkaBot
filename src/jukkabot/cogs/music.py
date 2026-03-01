@@ -39,6 +39,7 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "rock": ("Rock", "bass=g=5:f=120:w=0.7,treble=g=4:f=5000:w=0.7"),
     "trebleboost": ("Treble Boost", "treble=g=6:f=5000:w=0.8"),
 }
+SHOW_SHUFFLE_BUTTON = False
 
 
 class NowPlayingControls(discord.ui.View):
@@ -46,6 +47,8 @@ class NowPlayingControls(discord.ui.View):
         super().__init__(timeout=3600)
         self.cog = cog
         self.guild_id = guild_id
+        if not SHOW_SHUFFLE_BUTTON:
+            self.remove_item(self.shuffle_button)
         self._sync_repeat_button_style()
 
     def _sync_repeat_button_style(self) -> None:

@@ -49,7 +49,8 @@
   - Video thumbnail image
   - `Coming Next` section only when queue has items
 - Button controls (same style):
-  - Previous, next, pause/resume, shuffle, repeat, stop
+  - Previous, next, pause/resume, repeat, stop
+  - Shuffle logic exists but its now-playing button is currently hidden.
   - Repeat behavior:
     - If repeat is enabled, current track loops until repeat is disabled.
     - Repeat button active color should match now-playing green (Spotify green).
