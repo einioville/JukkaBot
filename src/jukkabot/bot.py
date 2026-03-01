@@ -247,7 +247,7 @@ class JukkaBot(commands.Bot):
                 lines.append("")
             lines.append(section_header)
             lines.extend(replacement)
-            return f"{'\n'.join(lines).rstrip()}\n"
+            return "\n".join(lines).rstrip() + "\n"
 
         section_start = header_index + 1
         section_end = len(lines)
@@ -258,7 +258,7 @@ class JukkaBot(commands.Bot):
                 break
 
         updated = lines[:section_start] + replacement + lines[section_end:]
-        return f"{'\n'.join(updated).rstrip()}\n"
+        return "\n".join(updated).rstrip() + "\n"
 
     def _sync_dynamic_memory_to_prompt_file(self) -> None:
         prompt_file = getattr(self, "chat_system_prompt_file", None)
