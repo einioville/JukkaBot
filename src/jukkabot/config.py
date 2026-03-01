@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -54,7 +55,10 @@ def load_settings() -> Settings:
         for value in raw_admins.split(","):
             value = value.strip()
             if value:
-                admin_user_ids.add(int(value))
+                try:
+                    admin_user_ids.add(int(value))
+                except ValueError:
+                    logging.warning("Ignoring invalid ADMIN_USER_IDS entry: %s", value)
 
     tracker_api_key = (
         os.getenv("TRACKER_API_KEY", "").strip() or os.getenv("TRN_API_KEY", "").strip()

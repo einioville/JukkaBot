@@ -135,6 +135,10 @@ def test_extract_memory_fact_payload() -> None:
         cog._extract_memory_fact_payload("<@123> Muista: Ville tykkaa fortnitesta")
         == "Ville tykkaa fortnitesta"
     )
+    assert (
+        cog._extract_memory_fact_payload("<@123>, Muista: Ville juo kahvia")
+        == "Ville juo kahvia"
+    )
     assert cog._extract_memory_fact_payload("remember that ville likes fortnite") is None
     assert cog._extract_memory_fact_payload("just chatting") is None
 

@@ -167,6 +167,16 @@ class MusicCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
+    async def _send_followup_and_finalize(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        *,
+        ephemeral: bool = True,
+    ) -> None:
+        await interaction.followup.send(content, ephemeral=ephemeral)
+        await self._finalize_silent(interaction)
+
     def _set_filter_preset(self, guild_id: int, preset_key: str) -> bool:
         preset = FILTER_PRESETS.get(preset_key)
         if preset is None:
@@ -429,6 +439,20 @@ class MusicCog(commands.Cog):
         voice = guild.voice_client
         if voice is None:
             return False
+
+        # Spotify-like behavior: restart current track if we've progressed enough.
+        if state.current_track is not None and self._current_elapsed_seconds(guild.id) > 5.0:
+            state.queue.appendleft(state.current_track)
+            state.skip_requested = True
+            self._pending_seek_seconds.pop(guild.id, None)
+            if voice.is_playing() or voice.is_paused():
+                voice.stop()
+                return True
+            self.queue_manager.finish_current(guild.id, add_to_history=False)
+            state.skip_requested = False
+            await self._play_next(guild)
+            return True
+
         if not state.history:
             return False
 
@@ -646,8 +670,10 @@ class MusicCog(commands.Cog):
             await self._ack_silent(interaction)
             await user_channel.connect()
         except discord.DiscordException as exc:
-            await interaction.followup.send(
-                f"Could not join voice channel: {exc}", ephemeral=True
+            await self._send_followup_and_finalize(
+                interaction,
+                f"Could not join voice channel: {exc}",
+                ephemeral=True,
             )
             return
 
@@ -790,19 +816,29 @@ class MusicCog(commands.Cog):
                 bot_voice = await user_channel.connect()
                 self.queue_manager.set_voice_channel(guild.id, user_channel.id)
             except discord.DiscordException as exc:
-                await interaction.followup.send(
-                    f"Could not join voice channel: {exc}", ephemeral=True
+                await self._send_followup_and_finalize(
+                    interaction,
+                    f"Could not join voice channel: {exc}",
+                    ephemeral=True,
                 )
                 return
 
         try:
             tracks = await asyncio.to_thread(self.music_service.search, query)
         except Exception as exc:
-            await interaction.followup.send(f"Search failed: {exc}", ephemeral=True)
+            await self._send_followup_and_finalize(
+                interaction,
+                f"Search failed: {exc}",
+                ephemeral=True,
+            )
             return
 
         if not tracks:
-            await interaction.followup.send("No results found.")
+            await self._send_followup_and_finalize(
+                interaction,
+                "No results found.",
+                ephemeral=True,
+            )
             return
 
         track = tracks[0]
@@ -844,14 +880,21 @@ class MusicCog(commands.Cog):
 
         voice = guild.voice_client
         if voice is None or state.current_track is None:
-            await interaction.response.send_message("Nothing is currently playing.")
+            await interaction.response.send_message(
+                "Nothing is currently playing.",
+                ephemeral=True,
+            )
             return
 
         await self._ack_silent(interaction)
         skipped = await self._skip_track(guild)
         self._touch_activity(guild.id)
         if not skipped:
-            await interaction.followup.send("Nothing is currently playing.", ephemeral=True)
+            await self._send_followup_and_finalize(
+                interaction,
+                "Nothing is currently playing.",
+                ephemeral=True,
+            )
             return
         await self._finalize_silent(interaction)
 
@@ -907,8 +950,10 @@ class MusicCog(commands.Cog):
 
         await self._ack_silent(interaction)
         if not await self._leave_voice(guild, interaction.channel_id):
-            await interaction.followup.send(
-                "I am not connected to a voice channel.", ephemeral=True
+            await self._send_followup_and_finalize(
+                interaction,
+                "I am not connected to a voice channel.",
+                ephemeral=True,
             )
             return
         await self._finalize_silent(interaction)

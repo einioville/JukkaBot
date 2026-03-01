@@ -393,9 +393,9 @@ class ChatCog(commands.Cog):
         mention_plain = f"<@{bot_user.id}>"
         mention_nick = f"<@!{bot_user.id}>"
         if stripped.startswith(mention_plain):
-            return stripped[len(mention_plain) :].lstrip()
+            return stripped[len(mention_plain) :].lstrip(" \t,:;-")
         if stripped.startswith(mention_nick):
-            return stripped[len(mention_nick) :].lstrip()
+            return stripped[len(mention_nick) :].lstrip(" \t,:;-")
         return content
 
     def _is_bot_mentioned(self, message: discord.Message) -> bool:
