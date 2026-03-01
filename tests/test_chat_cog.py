@@ -176,6 +176,39 @@ def test_build_user_prompt_omits_too_large_image_inputs() -> None:
     assert images == []
 
 
+def test_read_supported_image_attachment_returns_bytes() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    payload = b"\x89PNG\r\n\x1a\npayload"
+    attachment = _FakeAttachment(
+        filename="ref.png",
+        content_type="image/png",
+        payload=payload,
+    )
+
+    blob, note = asyncio.run(cog._read_supported_image_attachment(attachment))  # type: ignore[arg-type]
+
+    assert note is None
+    assert blob is not None
+    mime_type, image_bytes = blob
+    assert mime_type == "image/png"
+    assert image_bytes == payload
+
+
+def test_read_supported_image_attachment_rejects_non_image() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    attachment = _FakeAttachment(
+        filename="doc.pdf",
+        content_type="application/pdf",
+        payload=b"%PDF",
+    )
+
+    blob, note = asyncio.run(cog._read_supported_image_attachment(attachment))  # type: ignore[arg-type]
+
+    assert blob is None
+    assert note is not None
+    assert "not a supported image file" in note
+
+
 def test_extract_memory_fact_payload() -> None:
     cog = ChatCog.__new__(ChatCog)
     cog.bot = type("Bot", (), {"user": type("User", (), {"id": 123})()})()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import random
 import re
@@ -83,6 +84,12 @@ IMAGE_ATTACHMENT_MIME_BY_SUFFIX = {
     ".gif": "image/gif",
 }
 SUPPORTED_IMAGE_MIME_TYPES = set(IMAGE_ATTACHMENT_MIME_BY_SUFFIX.values())
+IMAGE_OUTPUT_SUFFIX_BY_MIME = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 @dataclass(slots=True)
@@ -218,6 +225,114 @@ class ChatCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="image",
+        description="Generate an image from a prompt. Optionally include a reference image.",
+    )
+    @app_commands.describe(
+        prompt="What image should be generated or edited.",
+        reference_image="Optional image to use as style/reference/edit input.",
+    )
+    async def image(
+        self,
+        interaction: discord.Interaction,
+        prompt: app_commands.Range[str, 1, 1000],
+        reference_image: discord.Attachment | None = None,
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+        channel = self._supported_text_channel(interaction.channel)
+        if channel is None:
+            await interaction.response.send_message(
+                "This command can only be used in a text channel or thread.",
+                ephemeral=True,
+            )
+            return
+        if self.openai_service is None:
+            await interaction.response.send_message(
+                "Image generation is unavailable because OPENAI_API_KEY is not configured.",
+                ephemeral=True,
+            )
+            return
+
+        prompt_text = " ".join(prompt.strip().split())
+        if not prompt_text:
+            await interaction.response.send_message(
+                "Prompt cannot be empty.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+
+        reference_payload: dict[str, object] | None = None
+        if reference_image is not None:
+            image_blob, image_note = await self._read_supported_image_attachment(reference_image)
+            if image_note:
+                await interaction.followup.send(image_note.strip("[]"), ephemeral=True)
+                return
+            if image_blob is None:
+                await interaction.followup.send(
+                    "Reference image could not be read.",
+                    ephemeral=True,
+                )
+                return
+            mime_type, image_bytes = image_blob
+            reference_payload = {
+                "filename": reference_image.filename.strip() or "reference.png",
+                "mime_type": mime_type,
+                "data": image_bytes,
+            }
+
+        try:
+            generated = await asyncio.to_thread(
+                self.openai_service.generate_image,
+                prompt_text,
+                reference_image=reference_payload,
+            )
+        except OpenAIServiceError as exc:
+            logger.warning("Image generation failed in guild %s: %s", guild.id, exc)
+            await interaction.followup.send(
+                f"Image generation failed: {exc}",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Unexpected image generation failure in guild %s", guild.id)
+            await interaction.followup.send(
+                "Image generation failed due to an unexpected error.",
+                ephemeral=True,
+            )
+            return
+
+        file_suffix = IMAGE_OUTPUT_SUFFIX_BY_MIME.get(generated.mime_type, ".png")
+        discord_file = discord.File(
+            io.BytesIO(generated.image_bytes),
+            filename=f"jukkabot_image{file_suffix}",
+        )
+        prompt_preview = prompt_text if len(prompt_text) <= 800 else f"{prompt_text[:797]}..."
+        if reference_payload is None:
+            prefix = "Generated image"
+        else:
+            prefix = "Generated image from reference"
+        response_text = f"{prefix}: `{prompt_preview}`"
+        revised_prompt = (generated.revised_prompt or "").strip()
+        if revised_prompt and revised_prompt.casefold() != prompt_text.casefold():
+            revised_preview = (
+                revised_prompt if len(revised_prompt) <= 400 else f"{revised_prompt[:397]}..."
+            )
+            response_text = f"{response_text}\nRevised prompt: `{revised_preview}`"
+        await interaction.followup.send(
+            response_text,
+            file=discord_file,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     def _is_supported_text_attachment(self, attachment: discord.Attachment) -> bool:
         content_type = (attachment.content_type or "").casefold()
         if content_type.startswith("text/"):
@@ -235,9 +350,9 @@ class ChatCog(commands.Cog):
     def _is_supported_image_attachment(self, attachment: discord.Attachment) -> bool:
         return self._resolve_image_mime_type(attachment) is not None
 
-    async def _build_image_input(
+    async def _read_supported_image_attachment(
         self, attachment: discord.Attachment
-    ) -> tuple[dict[str, str] | None, str | None]:
+    ) -> tuple[tuple[str, bytes] | None, str | None]:
         mime_type = self._resolve_image_mime_type(attachment)
         if mime_type is None:
             return None, (
@@ -261,6 +376,17 @@ class ChatCog(commands.Cog):
                 f"[Image omitted: {attachment.filename} is larger than "
                 f"{MAX_IMAGE_ATTACHMENT_BYTES // (1024 * 1024)}MB]"
             )
+        return (mime_type, data), None
+
+    async def _build_image_input(
+        self, attachment: discord.Attachment
+    ) -> tuple[dict[str, str] | None, str | None]:
+        image_blob, image_note = await self._read_supported_image_attachment(attachment)
+        if image_note:
+            return None, image_note
+        if image_blob is None:
+            return None, f"[Image omitted: failed to read {attachment.filename}]"
+        mime_type, data = image_blob
 
         encoded = base64.b64encode(data).decode("ascii")
         return {"mime_type": mime_type, "data_base64": encoded}, None

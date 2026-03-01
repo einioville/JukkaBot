@@ -6,7 +6,8 @@ import logging
 import re
 import socket
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -26,6 +27,13 @@ MAX_TOTAL_INPUT_CHARS = 18000
 MAX_API_RETRIES = 3
 
 
+@dataclass(slots=True)
+class GeneratedImage:
+    image_bytes: bytes
+    mime_type: str
+    revised_prompt: str | None = None
+
+
 class OpenAIService:
     def __init__(
         self,
@@ -36,6 +44,7 @@ class OpenAIService:
         max_output_tokens: int = 220,
         timeout_seconds: int = 30,
         enable_web_search: bool = True,
+        image_model: str = "gpt-image-1",
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -44,6 +53,7 @@ class OpenAIService:
         self.max_output_tokens = max(1, int(max_output_tokens))
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.enable_web_search = bool(enable_web_search)
+        self.image_model = image_model.strip() or "gpt-image-1"
         self.base_url = "https://api.openai.com/v1/responses"
         self._unsupported_params: set[str] = set()
 
@@ -104,6 +114,60 @@ class OpenAIService:
             logger.warning("OpenAI API returned empty output for model %s", self.model)
         return EMPTY_OUTPUT_FALLBACK_REPLY
 
+    def generate_image(
+        self,
+        prompt: str,
+        *,
+        reference_image: dict[str, Any] | None = None,
+        size: str = "1024x1024",
+    ) -> GeneratedImage:
+        cleaned_prompt = " ".join(prompt.strip().split())
+        if not cleaned_prompt:
+            raise OpenAIServiceError("Image prompt cannot be empty.")
+
+        cleaned_size = size.strip() or "1024x1024"
+        if reference_image is None:
+            payload = {
+                "model": self.image_model,
+                "prompt": cleaned_prompt,
+                "size": cleaned_size,
+            }
+            raw = self._request_json(
+                "https://api.openai.com/v1/images/generations",
+                payload,
+            )
+            return self._parse_generated_image(raw)
+
+        image_filename = reference_image.get("filename")
+        image_mime_type = reference_image.get("mime_type")
+        image_data = reference_image.get("data")
+        if not isinstance(image_filename, str) or not image_filename.strip():
+            image_filename = "reference.png"
+        if not isinstance(image_mime_type, str) or not image_mime_type.startswith("image/"):
+            raise OpenAIServiceError("Reference image mime type is invalid.")
+        if not isinstance(image_data, (bytes, bytearray)) or not image_data:
+            raise OpenAIServiceError("Reference image bytes are missing.")
+
+        fields = [
+            ("model", self.image_model),
+            ("prompt", cleaned_prompt),
+            ("size", cleaned_size),
+        ]
+        files = [
+            (
+                "image",
+                image_filename.strip(),
+                image_mime_type,
+                bytes(image_data),
+            )
+        ]
+        raw = self._request_multipart(
+            "https://api.openai.com/v1/images/edits",
+            fields,
+            files,
+        )
+        return self._parse_generated_image(raw)
+
     def _parse_response_payload(self, raw: str) -> dict[str, Any]:
         try:
             payload_data = json.loads(raw)
@@ -112,6 +176,184 @@ class OpenAIService:
         if not isinstance(payload_data, dict):
             raise OpenAIServiceError("Unexpected OpenAI response shape.")
         return payload_data
+
+    def _parse_generated_image(self, raw: str) -> GeneratedImage:
+        payload_data = self._parse_response_payload(raw)
+        data = payload_data.get("data")
+        if not isinstance(data, list) or not data:
+            raise OpenAIServiceError("Image API returned no image data.")
+
+        first = data[0]
+        if not isinstance(first, dict):
+            raise OpenAIServiceError("Image API returned invalid image payload.")
+        revised_prompt = first.get("revised_prompt")
+        if not isinstance(revised_prompt, str):
+            revised_prompt = None
+
+        b64_json = first.get("b64_json")
+        if isinstance(b64_json, str) and b64_json.strip():
+            try:
+                image_bytes = base64.b64decode(b64_json, validate=True)
+            except ValueError as exc:
+                raise OpenAIServiceError("Image API returned invalid base64 image data.") from exc
+            mime_type = first.get("mime_type")
+            if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
+                mime_type = "image/png"
+            return GeneratedImage(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                revised_prompt=revised_prompt,
+            )
+
+        image_url = first.get("url")
+        if isinstance(image_url, str) and image_url.strip():
+            image_bytes, mime_type = self._download_binary(image_url)
+            return GeneratedImage(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                revised_prompt=revised_prompt,
+            )
+        raise OpenAIServiceError("Image API response did not include image bytes.")
+
+    def _request_json(self, url: str, payload: dict[str, Any]) -> str:
+        body = json.dumps(payload).encode("utf-8")
+
+        def build_request() -> Request:
+            return Request(
+                url,
+                method="POST",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+        return self._request_with_retries(build_request)
+
+    def _request_multipart(
+        self,
+        url: str,
+        fields: list[tuple[str, str]],
+        files: list[tuple[str, str, str, bytes]],
+    ) -> str:
+        body, content_type = self._build_multipart_body(fields, files)
+
+        def build_request() -> Request:
+            return Request(
+                url,
+                method="POST",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": content_type,
+                },
+            )
+
+        return self._request_with_retries(build_request)
+
+    def _request_with_retries(self, build_request: Callable[[], Request]) -> str:
+        max_attempts = MAX_API_RETRIES
+        for _attempt in range(max_attempts):
+            request = build_request()
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    return response.read().decode("utf-8")
+            except HTTPError as exc:
+                message = self._extract_error_message(exc)
+                if exc.code == 401:
+                    raise OpenAIServiceError("OpenAI API key is invalid.") from exc
+                if exc.code == 429:
+                    raise OpenAIServiceError("OpenAI API rate limit reached.") from exc
+                raise OpenAIServiceError(
+                    f"OpenAI API request failed ({exc.code}): {message}"
+                ) from exc
+            except (TimeoutError, socket.timeout) as exc:
+                if _attempt < max_attempts - 1:
+                    delay = 0.5 * (_attempt + 1)
+                    logger.warning(
+                        "OpenAI API request timed out for model %s (attempt %s/%s); "
+                        "retrying in %.1fs.",
+                        self.model,
+                        _attempt + 1,
+                        max_attempts,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise OpenAIServiceError("OpenAI API request timed out.") from exc
+            except URLError as exc:
+                reason = getattr(exc, "reason", None)
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    if _attempt < max_attempts - 1:
+                        delay = 0.5 * (_attempt + 1)
+                        logger.warning(
+                            "OpenAI API network timeout for model %s (attempt %s/%s); "
+                            "retrying in %.1fs.",
+                            self.model,
+                            _attempt + 1,
+                            max_attempts,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    raise OpenAIServiceError("OpenAI API request timed out.") from exc
+                raise OpenAIServiceError("Could not reach OpenAI API.") from exc
+        raise OpenAIServiceError("OpenAI API request failed after retries.")
+
+    def _build_multipart_body(
+        self,
+        fields: list[tuple[str, str]],
+        files: list[tuple[str, str, str, bytes]],
+    ) -> tuple[bytes, str]:
+        boundary = f"----JukkaBotBoundary{int(time.time() * 1000)}"
+        boundary_bytes = boundary.encode("utf-8")
+        lines: list[bytes] = []
+        for key, value in fields:
+            safe_key = key.replace('"', "")
+            lines.extend(
+                [
+                    b"--" + boundary_bytes + b"\r\n",
+                    (
+                        f'Content-Disposition: form-data; name="{safe_key}"\r\n\r\n'
+                    ).encode("utf-8"),
+                    value.encode("utf-8"),
+                    b"\r\n",
+                ]
+            )
+        for field_name, file_name, mime_type, file_data in files:
+            safe_field_name = field_name.replace('"', "")
+            safe_file_name = file_name.replace('"', "")
+            lines.extend(
+                [
+                    b"--" + boundary_bytes + b"\r\n",
+                    (
+                        "Content-Disposition: form-data; "
+                        f'name="{safe_field_name}"; filename="{safe_file_name}"\r\n'
+                    ).encode("utf-8"),
+                    f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+                    file_data,
+                    b"\r\n",
+                ]
+            )
+        lines.append(b"--" + boundary_bytes + b"--\r\n")
+        body = b"".join(lines)
+        return body, f"multipart/form-data; boundary={boundary}"
+
+    def _download_binary(self, url: str) -> tuple[bytes, str]:
+        request = Request(url, method="GET")
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                image_bytes = response.read()
+                content_type_header = response.headers.get("Content-Type", "")
+        except (HTTPError, URLError, TimeoutError, socket.timeout) as exc:
+            raise OpenAIServiceError("Could not download generated image from OpenAI.") from exc
+        if not image_bytes:
+            raise OpenAIServiceError("Generated image download was empty.")
+        mime_type = content_type_header.split(";", 1)[0].strip().casefold()
+        if not mime_type.startswith("image/"):
+            mime_type = "image/png"
+        return image_bytes, mime_type
 
     def _request_with_adaptive_payload(
         self,

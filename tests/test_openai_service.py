@@ -266,3 +266,60 @@ def test_generate_reply_sends_image_input_blocks(monkeypatch: pytest.MonkeyPatch
     assert content[0]["type"] == "input_text"
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+
+def test_generate_image_uses_generations_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    calls: list[dict[str, object]] = []
+    image_payload = base64.b64encode(b"image-bytes").decode("ascii")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        assert request.full_url == "https://api.openai.com/v1/images/generations"
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse({"data": [{"b64_json": image_payload}]})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    result = service.generate_image("A red car in snow")
+
+    assert calls
+    assert calls[0]["model"] == "gpt-image-1"
+    assert calls[0]["prompt"] == "A red car in snow"
+    assert calls[0]["size"] == "1024x1024"
+    assert result.image_bytes == b"image-bytes"
+    assert result.mime_type == "image/png"
+
+
+def test_generate_image_uses_edits_endpoint_with_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    seen_headers: list[dict[str, str]] = []
+    seen_body: list[bytes] = []
+    image_payload = base64.b64encode(b"edited-image").decode("ascii")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        assert request.full_url == "https://api.openai.com/v1/images/edits"
+        headers = {key.casefold(): value for key, value in request.header_items()}
+        seen_headers.append(headers)
+        seen_body.append(request.data or b"")
+        return _FakeResponse({"data": [{"b64_json": image_payload, "mime_type": "image/webp"}]})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    result = service.generate_image(
+        "Make this cinematic",
+        reference_image={
+            "filename": "ref.png",
+            "mime_type": "image/png",
+            "data": b"\x89PNG\r\n",
+        },
+    )
+
+    assert seen_headers
+    assert seen_headers[0]["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="model"' in seen_body[0]
+    assert b"name=\"image\"; filename=\"ref.png\"" in seen_body[0]
+    assert b"Make this cinematic" in seen_body[0]
+    assert result.image_bytes == b"edited-image"
+    assert result.mime_type == "image/webp"

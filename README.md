@@ -15,6 +15,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/clear`: clear queue and delete now-playing message
   - `/leave`: disconnect and clear queue
   - `/chat`: AI chat mode (`on`, `off`) for the current server/channel
+  - `/image`: generate an image from text prompt, with optional reference image edit input
   - `/banuser`: ban user from queueing/skipping
   - `/unbanuser`: remove queue/skip ban
   - `/stats`: Tracker stats command (currently disabled until Tracker app approval)
@@ -44,6 +45,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/chat action:on` enables AI chat in the current guild/channel
   - Reads all channel messages for context/history, but replies only when mentioned
   - Reads supported text attachments only from the mentioned message
+  - Reads image attachments from mentioned messages for image understanding
   - Bot replies only when it is mentioned in chat
   - Dynamic memory updates only when the bot is mentioned and message starts with `Muista: ...` (leading bot mention is ignored in this check)
   - Stored facts are reused in later replies for continuity
@@ -80,6 +82,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
    - `CHAT_TEMPERATURE` (optional, default `0.8`)
    - `CHAT_MAX_OUTPUT_TOKENS` (optional, default `220`)
    - `CHAT_IDLE_TIMEOUT_SECONDS` (optional, default `300`)
+   - `CHAT_ENABLE_WEB_SEARCH` (optional, default `true`)
    - `TRACKER_API_KEY` or `TRN_API_KEY` (optional while `/stats` is disabled)
 5. Run:
    ```powershell
