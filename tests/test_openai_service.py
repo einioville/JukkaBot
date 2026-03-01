@@ -378,3 +378,36 @@ def test_has_available_balance_returns_false_on_quota_exhausted(
     # Cached value should avoid a second probe immediately.
     assert service.has_available_balance(force_refresh=False) is False
     assert calls == 1
+
+
+def test_has_available_balance_skips_probe_when_unknown_and_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    calls = 0
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
+        return _FakeResponse({"output_text": "ok"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    assert service.has_available_balance(force_refresh=False, probe_if_unknown=False) is True
+    assert calls == 0
+
+
+def test_has_available_balance_returns_cached_false_without_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    service._set_balance_status(False)
+    calls = 0
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
+        return _FakeResponse({"output_text": "ok"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    assert service.has_available_balance(force_refresh=False, probe_if_unknown=False) is False
+    assert calls == 0

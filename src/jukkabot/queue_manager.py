@@ -18,6 +18,7 @@ class GuildQueue:
     voice_channel_id: int | None = None
     text_channel_id: int | None = None
     now_playing_message_id: int | None = None
+    now_playing_channel_id: int | None = None
     skip_requested: bool = False
     repeat_current: bool = False
 
@@ -103,6 +104,7 @@ class QueueManager:
         guild_queue.voice_channel_id = None
         guild_queue.text_channel_id = None
         guild_queue.now_playing_message_id = None
+        guild_queue.now_playing_channel_id = None
         guild_queue.skip_requested = False
         guild_queue.repeat_current = False
 

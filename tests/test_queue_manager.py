@@ -64,6 +64,7 @@ def test_clear_preserves_filter_state_by_default() -> None:
     state = manager.get(1)
     state.active_filter_preset = "edm"
     state.active_audio_filter = "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"
+    state.now_playing_channel_id = 123
     state.repeat_current = True
     manager.add_track(1, make_track("song"))
     manager.pop_next(1)
@@ -75,4 +76,5 @@ def test_clear_preserves_filter_state_by_default() -> None:
     assert cleared.current_track is None
     assert cleared.active_filter_preset == "edm"
     assert cleared.active_audio_filter == "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"
+    assert cleared.now_playing_channel_id is None
     assert cleared.repeat_current is False

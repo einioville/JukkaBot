@@ -58,6 +58,7 @@
   - Previous behavior:
     - If current track elapsed time > 5s, restart current track from beginning.
     - Otherwise move to previous track and put current track back at the front of queue.
+- If music commands are used from a different text channel, move now-playing message there and delete the old one.
 - Button actions should update/edit existing now-playing message and avoid extra feedback spam.
 
 # Automation
@@ -88,6 +89,7 @@
   - `CHAT_ENABLE_WEB_SEARCH`
 - Configure prompt via `config.json`:
   - `chat.system_prompt_file` (project-relative prompt file path)
+- Dynamic memory sync to prompt is append-only: bot may add lines under `[Dynaaminen muisti]` but does not remove existing content.
 - Runtime compatibility: if a model rejects optional parameters, they are auto-disabled and retried.
 - Runtime stability: timeout failures are retried with short backoff.
 

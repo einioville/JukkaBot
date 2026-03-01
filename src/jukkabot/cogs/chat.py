@@ -267,7 +267,10 @@ class ChatCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if not self.openai_service.has_available_balance(force_refresh=True):
+        if not self.openai_service.has_available_balance(
+            force_refresh=False,
+            probe_if_unknown=False,
+        ):
             await interaction.response.send_message(
                 "Image generation is unavailable because OpenAI API balance is exhausted.",
                 ephemeral=True,

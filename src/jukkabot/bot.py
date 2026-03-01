@@ -245,16 +245,16 @@ class JukkaBot(commands.Bot):
                     return True
         return False
 
-    def _replace_prompt_section(
+    def _append_prompt_section_lines(
         self,
         prompt_text: str,
         section_header: str,
-        replacement_lines: Iterable[str],
+        append_lines: Iterable[str],
     ) -> str:
         lines = prompt_text.splitlines()
-        replacement = list(replacement_lines)
-        if not replacement:
-            replacement = [EMPTY_DYNAMIC_MEMORY_LINE]
+        additions = [line for line in append_lines if isinstance(line, str) and line.strip()]
+        if not additions:
+            return prompt_text
 
         header_index: int | None = None
         header_key = section_header.casefold()
@@ -267,7 +267,7 @@ class JukkaBot(commands.Bot):
             if lines and lines[-1].strip():
                 lines.append("")
             lines.append(section_header)
-            lines.extend(replacement)
+            lines.extend(additions)
             return "\n".join(lines).rstrip() + "\n"
 
         section_start = header_index + 1
@@ -278,7 +278,19 @@ class JukkaBot(commands.Bot):
                 section_end = index
                 break
 
-        updated = lines[:section_start] + replacement + lines[section_end:]
+        existing_lines = lines[section_start:section_end]
+        normalized_existing = {line.strip() for line in existing_lines if line.strip()}
+        deduped_additions: list[str] = []
+        for line in additions:
+            normalized = line.strip()
+            if normalized in normalized_existing:
+                continue
+            deduped_additions.append(line)
+            normalized_existing.add(normalized)
+        if not deduped_additions:
+            return prompt_text
+
+        updated = lines[:section_end] + deduped_additions + lines[section_end:]
         return "\n".join(updated).rstrip() + "\n"
 
     def _sync_dynamic_memory_to_prompt_file(self) -> None:
@@ -297,18 +309,13 @@ class JukkaBot(commands.Bot):
             logging.exception("Failed reading chat prompt file for memory sync: %s", candidate)
             return
 
-        has_dynamic_memory_section = any(
-            line.strip().casefold() == DYNAMIC_MEMORY_SECTION_HEADER.casefold()
-            for line in current_text.splitlines()
-        )
-        if has_dynamic_memory_section or self._has_chat_user_facts():
-            updated_text = self._replace_prompt_section(
+        updated_text = current_text
+        if self._has_chat_user_facts():
+            updated_text = self._append_prompt_section_lines(
                 current_text,
                 DYNAMIC_MEMORY_SECTION_HEADER,
                 self._render_dynamic_memory_lines(),
             )
-        else:
-            updated_text = current_text
         if updated_text != current_text:
             try:
                 candidate.write_text(updated_text, encoding="utf-8")

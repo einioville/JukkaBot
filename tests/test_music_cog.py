@@ -32,9 +32,54 @@ class _FakeVoiceClient:
 
 
 class _FakeGuild:
-    def __init__(self, guild_id: int, voice_client: _FakeVoiceClient) -> None:
+    def __init__(
+        self,
+        guild_id: int,
+        voice_client: _FakeVoiceClient,
+        channels: dict[int, object] | None = None,
+    ) -> None:
         self.id = guild_id
         self.voice_client = voice_client
+        self._channels = channels or {}
+
+    def get_channel(self, channel_id: int) -> object | None:
+        return self._channels.get(channel_id)
+
+
+class _FakeStoredMessage:
+    def __init__(self, message_id: int) -> None:
+        self.id = message_id
+        self.deleted = False
+        self.edited = False
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+    async def edit(self, **kwargs) -> None:  # noqa: ANN003
+        del kwargs
+        self.edited = True
+
+
+class _FakeTextChannel:
+    def __init__(self, channel_id: int) -> None:
+        self.id = channel_id
+        self.messages: dict[int, _FakeStoredMessage] = {}
+        self._next_message_id = 1000
+
+    def seed_message(self, message_id: int) -> _FakeStoredMessage:
+        message = _FakeStoredMessage(message_id)
+        self.messages[message_id] = message
+        return message
+
+    def get_partial_message(self, message_id: int) -> _FakeStoredMessage:
+        return self.messages.setdefault(message_id, _FakeStoredMessage(message_id))
+
+    async def send(self, embed=None, view=None) -> _FakeStoredMessage:  # noqa: ANN001
+        del embed, view
+        self._next_message_id += 1
+        message = _FakeStoredMessage(self._next_message_id)
+        self.messages[message.id] = message
+        return message
 
 
 class _FakeBot:
@@ -96,6 +141,32 @@ def test_previous_uses_history_when_elapsed_is_short() -> None:
     assert state.queue
     assert state.queue[0].title == "old"
     assert state.queue[1].title == "current"
+
+
+def test_previous_fallback_clears_skip_requested_before_manual_advance() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    cog._pending_seek_seconds = {}
+    cog._current_elapsed_seconds = lambda _guild_id: 2.0
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.history.append(_track("old"))
+    voice = _FakeVoiceClient(playing=False, paused=False)
+    guild = _FakeGuild(1, voice)
+    skip_state_seen_in_play_next: list[bool] = []
+
+    async def _fake_play_next(_guild: _FakeGuild, fallback_channel_id: int | None = None) -> None:
+        del _guild, fallback_channel_id
+        skip_state_seen_in_play_next.append(state.skip_requested)
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    moved = asyncio.run(cog._play_previous(guild))  # type: ignore[arg-type]
+
+    assert moved is True
+    assert skip_state_seen_in_play_next == [False]
+    assert state.skip_requested is False
 
 
 def test_after_track_finished_requeues_current_when_repeat_is_enabled() -> None:
@@ -167,3 +238,52 @@ def test_play_next_deletes_now_playing_message_when_queue_runs_empty() -> None:
 
     assert deleted_for == [(1, 123)]
     assert touched == [1]
+
+
+def test_send_now_playing_moves_message_to_new_channel_and_deletes_old() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+
+    old_channel = _FakeTextChannel(11)
+    old_message = old_channel.seed_message(900)
+    new_channel = _FakeTextChannel(22)
+    voice = _FakeVoiceClient(playing=True, paused=False, connected=True)
+    guild = _FakeGuild(1, voice, channels={11: old_channel, 22: new_channel})
+
+    state.now_playing_message_id = 900
+    state.now_playing_channel_id = 11
+
+    asyncio.run(
+        cog._send_now_playing(
+            guild, new_channel, _track("new"), edit_existing=True
+        )  # type: ignore[arg-type]
+    )
+
+    assert old_message.deleted is True
+    assert state.now_playing_channel_id == 22
+    assert state.now_playing_message_id is not None
+    assert state.now_playing_message_id in new_channel.messages
+
+
+def test_delete_now_playing_prefers_stored_message_channel_over_fallback() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+
+    old_channel = _FakeTextChannel(11)
+    old_message = old_channel.seed_message(901)
+    fallback_channel = _FakeTextChannel(33)
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice, channels={11: old_channel, 33: fallback_channel})
+
+    state.now_playing_message_id = 901
+    state.now_playing_channel_id = 11
+    cog._resolve_announce_channel = lambda _guild, _channel_id: fallback_channel  # type: ignore[assignment]
+
+    asyncio.run(cog._delete_now_playing_message(guild, fallback_channel_id=33))  # type: ignore[arg-type]
+
+    assert old_message.deleted is True
+    assert state.now_playing_message_id is None
+    assert state.now_playing_channel_id is None

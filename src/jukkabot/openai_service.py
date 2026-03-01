@@ -66,7 +66,12 @@ class OpenAIService:
         self._balance_status: bool | None = None
         self._balance_status_checked_at: float = 0.0
 
-    def has_available_balance(self, *, force_refresh: bool = False) -> bool:
+    def has_available_balance(
+        self,
+        *,
+        force_refresh: bool = False,
+        probe_if_unknown: bool = True,
+    ) -> bool:
         now = time.monotonic()
         if (
             not force_refresh
@@ -74,6 +79,8 @@ class OpenAIService:
             and (now - self._balance_status_checked_at) < BALANCE_PROBE_CACHE_SECONDS
         ):
             return self._balance_status
+        if not force_refresh and self._balance_status is None and not probe_if_unknown:
+            return True
 
         try:
             self._run_balance_probe()

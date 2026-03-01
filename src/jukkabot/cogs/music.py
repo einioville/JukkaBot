@@ -283,9 +283,18 @@ class MusicCog(commands.Cog):
         if state.now_playing_message_id is None:
             return
 
-        channel = self._resolve_announce_channel(guild, fallback_channel_id)
+        channel: discord.TextChannel | discord.Thread | None = None
+        if state.now_playing_channel_id is not None:
+            stored_channel = guild.get_channel(state.now_playing_channel_id)
+            if stored_channel is not None and callable(
+                getattr(stored_channel, "get_partial_message", None)
+            ):
+                channel = stored_channel
+        if channel is None:
+            channel = self._resolve_announce_channel(guild, fallback_channel_id)
         if channel is None:
             state.now_playing_message_id = None
+            state.now_playing_channel_id = None
             return
 
         old_message = channel.get_partial_message(state.now_playing_message_id)
@@ -295,6 +304,7 @@ class MusicCog(commands.Cog):
             pass
         finally:
             state.now_playing_message_id = None
+            state.now_playing_channel_id = None
 
     async def _cleanup_after_disconnect(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
@@ -413,24 +423,47 @@ class MusicCog(commands.Cog):
             embed.set_image(url=image_url)
 
         controls = NowPlayingControls(self, guild.id)
+        previous_channel: discord.TextChannel | discord.Thread | None = None
+        if state.now_playing_channel_id is not None:
+            stored_channel = guild.get_channel(state.now_playing_channel_id)
+            if stored_channel is not None and callable(
+                getattr(stored_channel, "get_partial_message", None)
+            ):
+                previous_channel = stored_channel
+        if previous_channel is None:
+            previous_channel = channel
 
-        if edit_existing and state.now_playing_message_id:
-            old_message = channel.get_partial_message(state.now_playing_message_id)
+        if (
+            edit_existing
+            and state.now_playing_message_id
+            and previous_channel is not None
+            and previous_channel.id == channel.id
+        ):
+            old_message = previous_channel.get_partial_message(state.now_playing_message_id)
             try:
                 await old_message.edit(embed=embed, view=controls)
+                state.now_playing_channel_id = channel.id
                 return
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
-        if state.now_playing_message_id:
-            old_message = channel.get_partial_message(state.now_playing_message_id)
-            try:
-                await old_message.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
+        if state.now_playing_message_id is not None:
+            if previous_channel is None:
+                state.now_playing_message_id = None
+                state.now_playing_channel_id = None
+            else:
+                old_message = previous_channel.get_partial_message(state.now_playing_message_id)
+                try:
+                    await old_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                finally:
+                    state.now_playing_message_id = None
+                    state.now_playing_channel_id = None
 
         message = await channel.send(embed=embed, view=controls)
         state.now_playing_message_id = message.id
+        state.now_playing_channel_id = channel.id
 
     async def _refresh_now_playing(
         self,
@@ -495,6 +528,7 @@ class MusicCog(commands.Cog):
         if voice.is_playing() or voice.is_paused():
             voice.stop()
             return True
+        state.skip_requested = False
         await self._play_next(guild)
         return True
 

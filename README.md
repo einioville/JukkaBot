@@ -32,6 +32,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - shuffle logic exists but is currently hidden from now-playing controls
   - repeat loops the currently playing track until toggled off
   - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
+  - if music commands are used from another channel, now-playing moves to that channel and old message is deleted
 - Control interactions edit the existing now-playing message (no extra feedback messages).
 - Audio filter presets available:
   - off, hiphop, edm, dance, vocal, pop, rock, trebleboost
@@ -51,6 +52,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - Reads image attachments from mentioned messages for image understanding
   - Bot replies only when it is mentioned in chat
   - Dynamic memory updates only when the bot is mentioned and message starts with `Muista: ...` (leading bot mention is ignored in this check)
+  - Dynamic memory sync is append-only in prompt file (`[Dynaaminen muisti]` content is never removed by the bot)
   - Stored facts are reused in later replies for continuity
   - Handles long model replies by splitting them into multiple Discord messages
   - On every user message in guild text channels/threads, there is a 10% chance to send one random GIF link
@@ -62,6 +64,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/image prompt:<text>` for text-to-image generation
   - `/image prompt:<text> reference_image:<attachment>` for reference/edit flows
   - `/image` is blocked if OpenAI API balance is exhausted
+  - `/image` balance check uses cached status first to avoid startup probe delays
   - Image generation uses a separate image model and a longer timeout (default 120s)
 
 ## Project Layout
