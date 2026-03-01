@@ -24,7 +24,7 @@
   - Enable is blocked when OpenAI API balance is exhausted.
   - Uses all channel messages as context; text/image attachments are read only when the bot is mentioned.
   - Replies only when the bot is mentioned.
-  - For every user message in active chat mode, bot has a 20% chance to send one random GIF link.
+  - For every user message in guild text channels/threads, bot has a 10% chance to send one random GIF link.
   - GIF links are configured via `config.json` key `chat.random_gif_urls` (falls back to built-in defaults if list is empty/missing).
   - Supports dynamic-memory updates only when mentioned and message starts with `Muista: ...` (leading bot mention ignored in that check).
 - `/image`: generate images from prompt text, optionally with a reference/edit image attachment.
@@ -88,7 +88,6 @@
   - `CHAT_ENABLE_WEB_SEARCH`
 - Configure prompt via `config.json`:
   - `chat.system_prompt_file` (project-relative prompt file path)
-  - `chat.user_facts` (persisted per guild/user facts memory)
 - Runtime compatibility: if a model rejects optional parameters, they are auto-disabled and retried.
 - Runtime stability: timeout failures are retried with short backoff.
 

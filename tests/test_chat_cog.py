@@ -298,3 +298,32 @@ def test_maybe_send_random_gif_skips_when_random_misses(monkeypatch) -> None:  #
     asyncio.run(cog._maybe_send_random_gif(channel))  # type: ignore[arg-type]
 
     assert channel.sent == []
+
+
+def test_on_message_checks_gif_even_without_chat_session() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    fake_channel = _FakeChannel()
+
+    class _Author:
+        bot = False
+        id = 1
+
+    class _Msg:
+        author = _Author()
+        guild = object()
+        channel = object()
+
+    called = {"value": False}
+
+    async def _fake_maybe_send_random_gif(_channel):  # noqa: ANN001
+        called["value"] = True
+        await fake_channel.send("https://example.com/a.gif")
+
+    cog._supported_text_channel = lambda _channel: fake_channel  # type: ignore[assignment]
+    cog._maybe_send_random_gif = _fake_maybe_send_random_gif  # type: ignore[assignment]
+    cog.openai_service = None
+
+    asyncio.run(cog.on_message(_Msg()))  # type: ignore[arg-type]
+
+    assert called["value"] is True
+    assert fake_channel.sent == ["https://example.com/a.gif"]

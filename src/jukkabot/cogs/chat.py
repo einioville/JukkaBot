@@ -65,7 +65,7 @@ MAX_IMAGE_ATTACHMENTS_PER_MESSAGE = 3
 MAX_MESSAGE_CONTEXT_CHARS = 8000
 MAX_MEMORY_CONTEXT_CHARS = 3500
 MAX_PARTICIPANTS_IN_MEMORY = 10
-GIF_CHANCE = 0.2
+GIF_CHANCE = 0.1
 MAX_REPLY_CHUNKS = 6
 MAX_DISCORD_MESSAGE_CHARS = 1900
 BRAINROT_GIF_URLS = (
@@ -672,6 +672,11 @@ class ChatCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.guild is None:
             return
+
+        target_channel = self._supported_text_channel(message.channel)
+        if target_channel is not None:
+            await self._maybe_send_random_gif(target_channel)
+
         if self.openai_service is None:
             return
 
@@ -680,9 +685,6 @@ class ChatCog(commands.Cog):
             return
 
         session.last_human_message_at = datetime.now(UTC)
-        target_channel = self._supported_text_channel(message.channel)
-        if target_channel is not None:
-            await self._maybe_send_random_gif(target_channel)
         is_mentioned = self._is_bot_mentioned(message)
         image_inputs: list[dict[str, str]] = []
         prompt = await self._build_user_prompt(

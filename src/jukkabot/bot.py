@@ -79,7 +79,6 @@ class JukkaBot(commands.Bot):
             system_prompt_file = chat.get("system_prompt_file")
             if isinstance(system_prompt_file, str) and system_prompt_file.strip():
                 self.chat_system_prompt_file = system_prompt_file.strip()
-            self._load_chat_user_facts(chat.get("user_facts"))
             self._load_chat_random_gif_urls(chat.get("random_gif_urls"))
 
         if self.chat_system_prompt_file:
@@ -366,26 +365,6 @@ class JukkaBot(commands.Bot):
             ]
             if cleaned_gif_urls:
                 chat_payload["random_gif_urls"] = cleaned_gif_urls
-        serialized_user_facts: dict[str, dict[str, dict[str, object]]] = {}
-        for guild_id, guild_facts in self.chat_user_facts_by_guild.items():
-            if not guild_facts:
-                continue
-            guild_payload: dict[str, dict[str, object]] = {}
-            guild_names = self.chat_user_names_by_guild.get(guild_id, {})
-            for user_id, facts in guild_facts.items():
-                if not facts:
-                    continue
-                user_payload: dict[str, object] = {
-                    "facts": list(facts),
-                }
-                name = guild_names.get(user_id)
-                if isinstance(name, str) and name.strip():
-                    user_payload["name"] = name.strip()
-                guild_payload[str(user_id)] = user_payload
-            if guild_payload:
-                serialized_user_facts[str(guild_id)] = guild_payload
-        if serialized_user_facts:
-            chat_payload["user_facts"] = serialized_user_facts
         payload = {
             "chat": chat_payload,
             "guilds": self.queue_manager.to_persistent_state(),
