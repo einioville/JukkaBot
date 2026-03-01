@@ -42,6 +42,7 @@ class JukkaBot(commands.Bot):
         self.chat_system_prompt_file: str | None = DEFAULT_CHAT_PROMPT_FILE
         self.chat_user_facts_by_guild: dict[int, dict[int, list[str]]] = {}
         self.chat_user_names_by_guild: dict[int, dict[int, str]] = {}
+        self.chat_random_gif_urls: list[str] = []
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
         self._chat_prompt_sync_task: asyncio.Task[None] | None = None
@@ -61,6 +62,8 @@ class JukkaBot(commands.Bot):
             )
 
     def _load_persistent_config(self) -> None:
+        if not hasattr(self, "chat_random_gif_urls"):
+            self.chat_random_gif_urls = []
         if not self.config_path.exists():
             return
         try:
@@ -77,6 +80,7 @@ class JukkaBot(commands.Bot):
             if isinstance(system_prompt_file, str) and system_prompt_file.strip():
                 self.chat_system_prompt_file = system_prompt_file.strip()
             self._load_chat_user_facts(chat.get("user_facts"))
+            self._load_chat_random_gif_urls(chat.get("random_gif_urls"))
 
         if self.chat_system_prompt_file:
             self._sync_dynamic_memory_to_prompt_file()
@@ -129,6 +133,20 @@ class JukkaBot(commands.Bot):
                 self.chat_user_facts_by_guild[guild_id] = guild_facts
             if guild_names:
                 self.chat_user_names_by_guild[guild_id] = guild_names
+
+    def _load_chat_random_gif_urls(self, raw: object) -> None:
+        self.chat_random_gif_urls = []
+        if not isinstance(raw, list):
+            return
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            url = item.strip()
+            if not url:
+                continue
+            if not (url.startswith("http://") or url.startswith("https://")):
+                continue
+            self.chat_random_gif_urls.append(url)
 
     def add_chat_user_fact(
         self,
@@ -334,6 +352,20 @@ class JukkaBot(commands.Bot):
         chat_payload: dict[str, object] = {}
         if self.chat_system_prompt_file:
             chat_payload["system_prompt_file"] = self.chat_system_prompt_file
+        gif_urls = getattr(self, "chat_random_gif_urls", [])
+        if isinstance(gif_urls, list):
+            cleaned_gif_urls = [
+                url.strip()
+                for url in gif_urls
+                if isinstance(url, str)
+                and url.strip()
+                and (
+                    url.strip().startswith("http://")
+                    or url.strip().startswith("https://")
+                )
+            ]
+            if cleaned_gif_urls:
+                chat_payload["random_gif_urls"] = cleaned_gif_urls
         serialized_user_facts: dict[str, dict[str, dict[str, object]]] = {}
         for guild_id, guild_facts in self.chat_user_facts_by_guild.items():
             if not guild_facts:

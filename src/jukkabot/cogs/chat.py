@@ -66,7 +66,6 @@ MAX_MESSAGE_CONTEXT_CHARS = 8000
 MAX_MEMORY_CONTEXT_CHARS = 3500
 MAX_PARTICIPANTS_IN_MEMORY = 10
 GIF_CHANCE = 0.2
-GIF_COOLDOWN_SECONDS = 60
 MAX_REPLY_CHUNKS = 6
 MAX_DISCORD_MESSAGE_CHARS = 1900
 BRAINROT_GIF_URLS = (
@@ -113,7 +112,6 @@ class ChatSession:
     participants: dict[int, ParticipantState] = field(default_factory=dict)
     messages_since_last_reply: int = 0
     last_bot_reply_at: datetime | None = None
-    last_gif_sent_at: datetime | None = None
 
 
 class ChatCog(commands.Cog):
@@ -615,12 +613,36 @@ class ChatCog(commands.Cog):
             return False
         return any(user.id == self.bot.user.id for user in message.mentions)
 
-    def _should_send_gif(self, session: ChatSession, now: datetime) -> bool:
-        if session.last_gif_sent_at is not None:
-            elapsed = (now - session.last_gif_sent_at).total_seconds()
-            if elapsed < GIF_COOLDOWN_SECONDS:
-                return False
-        return random.random() < GIF_CHANCE
+    def _resolve_random_gif_urls(self) -> tuple[str, ...]:
+        raw = getattr(self.bot, "chat_random_gif_urls", None)
+        if isinstance(raw, list):
+            cleaned = tuple(
+                url.strip()
+                for url in raw
+                if isinstance(url, str)
+                and url.strip()
+                and (url.strip().startswith("http://") or url.strip().startswith("https://"))
+            )
+            if cleaned:
+                return cleaned
+        return BRAINROT_GIF_URLS
+
+    async def _maybe_send_random_gif(
+        self,
+        channel: discord.TextChannel | discord.Thread,
+    ) -> None:
+        urls = self._resolve_random_gif_urls()
+        if not urls:
+            return
+        if random.random() >= GIF_CHANCE:
+            return
+        try:
+            await channel.send(
+                random.choice(urls),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
 
     def _split_discord_chunks(self, text: str, limit: int = MAX_DISCORD_MESSAGE_CHARS) -> list[str]:
         remaining = text.strip()
@@ -658,6 +680,9 @@ class ChatCog(commands.Cog):
             return
 
         session.last_human_message_at = datetime.now(UTC)
+        target_channel = self._supported_text_channel(message.channel)
+        if target_channel is not None:
+            await self._maybe_send_random_gif(target_channel)
         is_mentioned = self._is_bot_mentioned(message)
         image_inputs: list[dict[str, str]] = []
         prompt = await self._build_user_prompt(
@@ -766,16 +791,6 @@ class ChatCog(commands.Cog):
                 target = active_session.participants.get(message.author.id)
                 if target is not None:
                     target.cooked_count += 1
-                if self._should_send_gif(active_session, active_session.last_bot_reply_at):
-                    try:
-                        await message.channel.send(
-                            random.choice(BRAINROT_GIF_URLS),
-                            allowed_mentions=discord.AllowedMentions.none(),
-                        )
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        pass
-                    else:
-                        active_session.last_gif_sent_at = datetime.now(UTC)
 
     @tasks.loop(seconds=30)
     async def chat_idle_watchdog(self) -> None:

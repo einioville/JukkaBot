@@ -53,7 +53,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - Dynamic memory updates only when the bot is mentioned and message starts with `Muista: ...` (leading bot mention is ignored in this check)
   - Stored facts are reused in later replies for continuity
   - Handles long model replies by splitting them into multiple Discord messages
-  - Occasionally sends brainrot GIF links
+  - On every user message in active chat mode, there is a 20% chance to send one random GIF link
+  - GIF links are configurable in `config.json` (`chat.random_gif_urls`)
   - Bot replies in that channel until quiet for 5 minutes, then chat auto-disables
   - `/chat action:off` disables immediately
   - Uses OpenAI web search tools when supported by the selected chat model
@@ -126,6 +127,10 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 {
   "chat": {
     "system_prompt_file": "resources/prompts/ragebait_chat_prompt.txt",
+    "random_gif_urls": [
+      "https://example.com/a.gif",
+      "https://example.com/b.gif"
+    ],
     "user_facts": {
       "727518463886753812": {
         "481082798321434635": {

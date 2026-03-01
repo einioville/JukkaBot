@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import random
 
 from jukkabot.cogs.chat import (
+    BRAINROT_GIF_URLS,
     ChatCog,
+    GIF_CHANCE,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_TEXT_CHARS,
     MAX_DISCORD_MESSAGE_CHARS,
@@ -234,3 +237,64 @@ def test_split_discord_chunks_splits_long_text() -> None:
 
     assert len(chunks) >= 2
     assert all(len(chunk) <= MAX_DISCORD_MESSAGE_CHARS + 4 for chunk in chunks)
+
+
+def test_resolve_random_gif_urls_prefers_bot_config() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    cog.bot = type(
+        "Bot",
+        (),
+        {"chat_random_gif_urls": ["https://example.com/a.gif", "https://example.com/b.gif"]},
+    )()
+
+    urls = cog._resolve_random_gif_urls()
+
+    assert urls == ("https://example.com/a.gif", "https://example.com/b.gif")
+
+
+def test_resolve_random_gif_urls_falls_back_to_default() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    cog.bot = type("Bot", (), {"chat_random_gif_urls": []})()
+
+    urls = cog._resolve_random_gif_urls()
+
+    assert urls == BRAINROT_GIF_URLS
+
+
+class _FakeChannel:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, content: str, allowed_mentions=None) -> None:  # noqa: ANN001
+        del allowed_mentions
+        self.sent.append(content)
+
+
+def test_maybe_send_random_gif_sends_when_random_hits(monkeypatch) -> None:  # noqa: ANN001
+    cog = ChatCog.__new__(ChatCog)
+    cog.bot = type(
+        "Bot",
+        (),
+        {"chat_random_gif_urls": ["https://example.com/a.gif"]},
+    )()
+    channel = _FakeChannel()
+
+    monkeypatch.setattr(random, "random", lambda: GIF_CHANCE - 0.01)
+    asyncio.run(cog._maybe_send_random_gif(channel))  # type: ignore[arg-type]
+
+    assert channel.sent == ["https://example.com/a.gif"]
+
+
+def test_maybe_send_random_gif_skips_when_random_misses(monkeypatch) -> None:  # noqa: ANN001
+    cog = ChatCog.__new__(ChatCog)
+    cog.bot = type(
+        "Bot",
+        (),
+        {"chat_random_gif_urls": ["https://example.com/a.gif"]},
+    )()
+    channel = _FakeChannel()
+
+    monkeypatch.setattr(random, "random", lambda: GIF_CHANCE + 0.01)
+    asyncio.run(cog._maybe_send_random_gif(channel))  # type: ignore[arg-type]
+
+    assert channel.sent == []
