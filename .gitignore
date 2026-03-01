@@ -8,3 +8,4 @@ resources/prompts/*.txt
 dist/
 build/
 .pytest_cache/
+**/.tmp*/
