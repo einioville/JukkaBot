@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 from urllib.error import HTTPError
@@ -177,3 +178,91 @@ def test_generate_reply_retries_timeout_and_recovers(
 
     assert reply == "after timeout"
     assert calls == 2
+
+
+def test_generate_reply_enables_web_search_tools_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake", enable_web_search=True)
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse({"output_text": "with web search"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply(
+        [{"role": "user", "content": "What's new today?"}],
+        use_web_search=True,
+    )
+
+    assert reply == "with web search"
+    assert payloads
+    assert payloads[0]["tool_choice"] == "auto"
+    assert payloads[0]["tools"] == [{"type": "web_search_preview"}]
+
+
+def test_generate_reply_retries_without_unsupported_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake", enable_web_search=True)
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payload = json.loads(request.data.decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise HTTPError(
+                url="https://api.openai.com/v1/responses",
+                code=400,
+                msg="Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"Unknown parameter: \'tools\'"}}'
+                ),
+            )
+        return _FakeResponse({"output_text": "fallback without tools"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply(
+        [{"role": "user", "content": "Need online answer"}],
+        use_web_search=True,
+    )
+
+    assert reply == "fallback without tools"
+    assert "tools" in payloads[0]
+    assert "tool_choice" in payloads[0]
+    assert "tools" not in payloads[1]
+    assert "tool_choice" not in payloads[1]
+
+
+def test_generate_reply_sends_image_input_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = OpenAIService(api_key="fake")
+    payloads: list[dict[str, object]] = []
+    image_data = base64.b64encode(b"\x89PNG\r\n").decode("ascii")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse({"output_text": "saw image"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply(
+        [
+            {
+                "role": "user",
+                "content": "Describe this image",
+                "images": [{"mime_type": "image/png", "data_base64": image_data}],
+            }
+        ]
+    )
+
+    assert reply == "saw image"
+    sent_input = payloads[0]["input"]
+    assert isinstance(sent_input, list)
+    user_message = sent_input[1]
+    assert user_message["role"] == "user"
+    content = user_message["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "input_text"
+    assert content[1]["type"] == "input_image"
+    assert content[1]["image_url"].startswith("data:image/png;base64,")

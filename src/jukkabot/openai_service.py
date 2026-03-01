@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -34,6 +35,7 @@ class OpenAIService:
         temperature: float = 0.8,
         max_output_tokens: int = 220,
         timeout_seconds: int = 30,
+        enable_web_search: bool = True,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -41,10 +43,16 @@ class OpenAIService:
         self.temperature = max(0.0, min(2.0, float(temperature)))
         self.max_output_tokens = max(1, int(max_output_tokens))
         self.timeout_seconds = max(1, int(timeout_seconds))
+        self.enable_web_search = bool(enable_web_search)
         self.base_url = "https://api.openai.com/v1/responses"
         self._unsupported_params: set[str] = set()
 
-    def generate_reply(self, messages: list[dict[str, str]]) -> str:
+    def generate_reply(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        use_web_search: bool = False,
+    ) -> str:
         input_messages = self._build_input_messages(messages)
 
         base_payload = {
@@ -55,6 +63,9 @@ class OpenAIService:
             "max_output_tokens": self.max_output_tokens,
             "temperature": self.temperature,
         }
+        if use_web_search and self.enable_web_search:
+            optional_payload["tools"] = [{"type": "web_search_preview"}]
+            optional_payload["tool_choice"] = "auto"
         raw = self._request_with_adaptive_payload(base_payload, optional_payload)
         payload_data = self._parse_response_payload(raw)
 
@@ -130,9 +141,13 @@ class OpenAIService:
                 message = self._extract_error_message(exc)
                 if exc.code == 400:
                     unsupported = self._extract_unsupported_parameter(message)
+                    if unsupported and unsupported.startswith("tools["):
+                        unsupported = "tools"
                     if unsupported and unsupported in payload:
                         if unsupported not in self._unsupported_params:
                             self._unsupported_params.add(unsupported)
+                            if unsupported == "tools":
+                                self._unsupported_params.add("tool_choice")
                             logger.warning(
                                 "Model %s does not support parameter '%s'; "
                                 "retrying without it.",
@@ -140,6 +155,19 @@ class OpenAIService:
                                 unsupported,
                             )
                             continue
+                    if (
+                        "tools" in payload
+                        and self._looks_like_unsupported_tools_error(message)
+                        and "tools" not in self._unsupported_params
+                    ):
+                        self._unsupported_params.add("tools")
+                        self._unsupported_params.add("tool_choice")
+                        logger.warning(
+                            "Model %s does not support web search tools; "
+                            "retrying without tools.",
+                            self.model,
+                        )
+                        continue
                 if exc.code == 401:
                     raise OpenAIServiceError("OpenAI API key is invalid.") from exc
                 if exc.code == 429:
@@ -183,30 +211,35 @@ class OpenAIService:
             "OpenAI API request failed: model rejected supported parameter set."
         )
 
-    def _build_input_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _build_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         system_prompt = self.system_prompt.strip()
-        input_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        input_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-        cleaned: list[dict[str, str]] = []
+        cleaned: list[dict[str, Any]] = []
         for message in messages:
             role = message.get("role")
-            content = message.get("content")
             if role not in {"user", "assistant"}:
                 continue
-            if not isinstance(content, str):
-                continue
-            trimmed = content.strip()
-            if not trimmed:
-                continue
+            content = message.get("content")
+            trimmed = content.strip() if isinstance(content, str) else ""
             if len(trimmed) > MAX_INPUT_MESSAGE_CHARS:
                 trimmed = f"{trimmed[:MAX_INPUT_MESSAGE_CHARS]}..."
+            image_blocks = self._build_image_blocks(message.get("images"))
+            if not trimmed and not image_blocks:
+                continue
+            if image_blocks:
+                content_blocks: list[dict[str, str]] = []
+                if trimmed:
+                    content_blocks.append({"type": "input_text", "text": trimmed})
+                content_blocks.extend(image_blocks)
+                cleaned.append({"role": role, "content": content_blocks})
+                continue
             cleaned.append({"role": role, "content": trimmed})
 
         total_chars = len(system_prompt)
-        selected_reversed: list[dict[str, str]] = []
+        selected_reversed: list[dict[str, Any]] = []
         for message in reversed(cleaned):
-            content = message["content"]
-            projected = total_chars + len(content)
+            projected = total_chars + self._message_content_text_length(message.get("content"))
             if selected_reversed and projected > MAX_TOTAL_INPUT_CHARS:
                 break
             selected_reversed.append(message)
@@ -217,18 +250,78 @@ class OpenAIService:
         input_messages.extend(reversed(selected_reversed))
         return input_messages
 
+    def _build_image_blocks(self, images: Any) -> list[dict[str, str]]:
+        if not isinstance(images, list):
+            return []
+
+        blocks: list[dict[str, str]] = []
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            mime_type = image.get("mime_type")
+            data_base64 = image.get("data_base64")
+            if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
+                continue
+            if not isinstance(data_base64, str):
+                continue
+
+            cleaned_data = "".join(data_base64.strip().split())
+            if not cleaned_data:
+                continue
+            try:
+                base64.b64decode(cleaned_data, validate=True)
+            except ValueError:
+                continue
+            blocks.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{cleaned_data}",
+                }
+            )
+            if len(blocks) >= 3:
+                break
+        return blocks
+
+    def _message_content_text_length(self, content: Any) -> int:
+        if isinstance(content, str):
+            return len(content)
+        if not isinstance(content, list):
+            return 0
+        total = 0
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "input_text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                total += len(text)
+        return total
+
     def _extract_unsupported_parameter(self, message: str) -> str | None:
         patterns = (
             r"Unsupported parameter:\s*'([^']+)'",
             r"Unknown parameter:\s*'([^']+)'",
             r"Parameter\s+'([^']+)'\s+is not supported",
             r"'([^']+)'\s+is not supported with this model",
+            r"Invalid field:\s*'([^']+)'",
         )
         for pattern in patterns:
             match = re.search(pattern, message, flags=re.IGNORECASE)
             if match:
                 return match.group(1)
         return None
+
+    def _looks_like_unsupported_tools_error(self, message: str) -> bool:
+        lowered = message.casefold()
+        if "tool" not in lowered and "web_search_preview" not in lowered:
+            return False
+        return (
+            "not support" in lowered
+            or "unknown" in lowered
+            or "invalid" in lowered
+            or "unrecognized" in lowered
+        )
 
     def _extract_error_message(self, exc: HTTPError) -> str:
         try:

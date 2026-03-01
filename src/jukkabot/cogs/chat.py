@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import random
 import re
@@ -54,6 +55,8 @@ TEXT_ATTACHMENT_EXTENSIONS = {
 MAX_ATTACHMENT_BYTES = 256 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 3
 MAX_ATTACHMENT_TEXT_CHARS = 3500
+MAX_IMAGE_ATTACHMENT_BYTES = 6 * 1024 * 1024
+MAX_IMAGE_ATTACHMENTS_PER_MESSAGE = 3
 MAX_MESSAGE_CONTEXT_CHARS = 8000
 MAX_MEMORY_CONTEXT_CHARS = 3500
 MAX_PARTICIPANTS_IN_MEMORY = 10
@@ -72,6 +75,14 @@ REMEMBER_COMMAND_PATTERN = re.compile(
     r"^\s*muista\s*:\s*(.+)$",
     flags=re.IGNORECASE,
 )
+IMAGE_ATTACHMENT_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+SUPPORTED_IMAGE_MIME_TYPES = set(IMAGE_ATTACHMENT_MIME_BY_SUFFIX.values())
 
 
 @dataclass(slots=True)
@@ -214,11 +225,52 @@ class ChatCog(commands.Cog):
         suffix = Path(attachment.filename).suffix.casefold()
         return suffix in TEXT_ATTACHMENT_EXTENSIONS
 
+    def _resolve_image_mime_type(self, attachment: discord.Attachment) -> str | None:
+        content_type = (attachment.content_type or "").split(";", 1)[0].strip().casefold()
+        if content_type in SUPPORTED_IMAGE_MIME_TYPES:
+            return content_type
+        suffix = Path(attachment.filename).suffix.casefold()
+        return IMAGE_ATTACHMENT_MIME_BY_SUFFIX.get(suffix)
+
+    def _is_supported_image_attachment(self, attachment: discord.Attachment) -> bool:
+        return self._resolve_image_mime_type(attachment) is not None
+
+    async def _build_image_input(
+        self, attachment: discord.Attachment
+    ) -> tuple[dict[str, str] | None, str | None]:
+        mime_type = self._resolve_image_mime_type(attachment)
+        if mime_type is None:
+            return None, (
+                f"[Attachment omitted: {attachment.filename} is not a supported image file]"
+            )
+        if attachment.size > MAX_IMAGE_ATTACHMENT_BYTES:
+            return None, (
+                f"[Image omitted: {attachment.filename} is larger than "
+                f"{MAX_IMAGE_ATTACHMENT_BYTES // (1024 * 1024)}MB]"
+            )
+
+        try:
+            data = await attachment.read()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            return None, f"[Image omitted: failed to read {attachment.filename}]"
+
+        if not data:
+            return None, f"[Image omitted: {attachment.filename} is empty]"
+        if len(data) > MAX_IMAGE_ATTACHMENT_BYTES:
+            return None, (
+                f"[Image omitted: {attachment.filename} is larger than "
+                f"{MAX_IMAGE_ATTACHMENT_BYTES // (1024 * 1024)}MB]"
+            )
+
+        encoded = base64.b64encode(data).decode("ascii")
+        return {"mime_type": mime_type, "data_base64": encoded}, None
+
     async def _build_user_prompt(
         self,
         message: discord.Message,
         *,
         include_attachments: bool,
+        image_inputs_out: list[dict[str, str]] | None = None,
     ) -> str:
         parts: list[str] = []
         base_text = message.content.strip()
@@ -227,15 +279,33 @@ class ChatCog(commands.Cog):
 
         if include_attachments:
             for attachment in message.attachments[:MAX_ATTACHMENTS_PER_MESSAGE]:
+                if not self._is_supported_text_attachment(attachment):
+                    if (
+                        image_inputs_out is not None
+                        and self._is_supported_image_attachment(attachment)
+                    ):
+                        if len(image_inputs_out) >= MAX_IMAGE_ATTACHMENTS_PER_MESSAGE:
+                            parts.append(
+                                f"[Image omitted: more than {MAX_IMAGE_ATTACHMENTS_PER_MESSAGE} "
+                                "images are not supported]"
+                            )
+                            continue
+                        image_input, image_note = await self._build_image_input(attachment)
+                        if image_note:
+                            parts.append(image_note)
+                            continue
+                        if image_input is not None:
+                            image_inputs_out.append(image_input)
+                            parts.append(f"[Image attached: {attachment.filename}]")
+                            continue
+                    parts.append(
+                        f"[Attachment omitted: {attachment.filename} is not a supported text file]"
+                    )
+                    continue
                 if attachment.size > MAX_ATTACHMENT_BYTES:
                     parts.append(
                         f"[Attachment omitted: {attachment.filename} is larger than "
                         f"{MAX_ATTACHMENT_BYTES // 1024}KB]"
-                    )
-                    continue
-                if not self._is_supported_text_attachment(attachment):
-                    parts.append(
-                        f"[Attachment omitted: {attachment.filename} is not a supported text file]"
                     )
                     continue
 
@@ -447,9 +517,11 @@ class ChatCog(commands.Cog):
 
         session.last_human_message_at = datetime.now(UTC)
         is_mentioned = self._is_bot_mentioned(message)
+        image_inputs: list[dict[str, str]] = []
         prompt = await self._build_user_prompt(
             message,
             include_attachments=is_mentioned,
+            image_inputs_out=image_inputs if is_mentioned else None,
         )
         if not prompt:
             return
@@ -467,9 +539,8 @@ class ChatCog(commands.Cog):
         participant.message_count += 1
         participant.last_message = prompt[:300]
         session.messages_since_last_reply += 1
-        session.history.append(
-            {"role": "user", "content": f"{user_display_name}: {prompt}"}
-        )
+        history_entry: dict[str, str] = {"role": "user", "content": f"{user_display_name}: {prompt}"}
+        session.history.append(history_entry)
         if not is_mentioned:
             return
         self._remember_user_fact(message, session)
@@ -481,6 +552,15 @@ class ChatCog(commands.Cog):
                 return
 
             history = list(active_session.history)
+            if image_inputs:
+                for index in range(len(history) - 1, -1, -1):
+                    if history[index] is history_entry:
+                        history[index] = {
+                            "role": "user",
+                            "content": history_entry["content"],
+                            "images": image_inputs,
+                        }
+                        break
             memory_block = self._build_participant_memory(active_session)
             if memory_block:
                 history = [{"role": "user", "content": memory_block}, *history]
@@ -489,6 +569,7 @@ class ChatCog(commands.Cog):
                     response_text = await asyncio.to_thread(
                         self.openai_service.generate_reply,
                         history,
+                        use_web_search=True,
                     )
             except OpenAIServiceError as exc:
                 logger.warning("Chat reply failed in guild %s: %s", message.guild.id, exc)

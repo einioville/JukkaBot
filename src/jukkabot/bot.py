@@ -54,6 +54,7 @@ class JukkaBot(commands.Bot):
                 system_prompt=self.chat_system_prompt,
                 temperature=settings.chat_temperature,
                 max_output_tokens=settings.chat_max_output_tokens,
+                enable_web_search=settings.chat_enable_web_search,
             )
 
     def _load_persistent_config(self) -> None:

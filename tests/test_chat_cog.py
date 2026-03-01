@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 
 from jukkabot.cogs.chat import (
     ChatCog,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_TEXT_CHARS,
     MAX_DISCORD_MESSAGE_CHARS,
+    MAX_IMAGE_ATTACHMENT_BYTES,
 )
 
 
@@ -124,6 +126,54 @@ def test_build_user_prompt_truncates_long_attachment_text() -> None:
 
     assert len(prompt) < len(long_text) + 100
     assert prompt.endswith("...")
+
+
+def test_build_user_prompt_collects_supported_image_inputs() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    payload = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    msg = _FakeMessage(
+        content="what is in this",
+        attachments=[
+            _FakeAttachment(
+                filename="shot.png",
+                content_type="image/png",
+                payload=payload,
+            )
+        ],
+    )
+    images: list[dict[str, str]] = []
+
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=True, image_inputs_out=images)
+    )
+
+    assert "[Image attached: shot.png]" in prompt
+    assert len(images) == 1
+    assert images[0]["mime_type"] == "image/png"
+    assert base64.b64decode(images[0]["data_base64"]) == payload
+
+
+def test_build_user_prompt_omits_too_large_image_inputs() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    msg = _FakeMessage(
+        content="please read",
+        attachments=[
+            _FakeAttachment(
+                filename="big.png",
+                content_type="image/png",
+                payload=b"data",
+                size=MAX_IMAGE_ATTACHMENT_BYTES + 1,
+            )
+        ],
+    )
+    images: list[dict[str, str]] = []
+
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=True, image_inputs_out=images)
+    )
+
+    assert "larger than" in prompt
+    assert images == []
 
 
 def test_extract_memory_fact_payload() -> None:

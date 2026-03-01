@@ -17,6 +17,7 @@ class Settings:
     chat_temperature: float
     chat_max_output_tokens: int
     chat_idle_timeout_seconds: int
+    chat_enable_web_search: bool
 
 
 def _env_int(name: str, default: int, minimum: int | None = None) -> int:
@@ -41,6 +42,17 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     except ValueError:
         return default
     return max(minimum, min(maximum, value))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().casefold()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def load_settings() -> Settings:
@@ -68,6 +80,7 @@ def load_settings() -> Settings:
     chat_temperature = _env_float("CHAT_TEMPERATURE", 0.8, 0.0, 2.0)
     chat_max_output_tokens = _env_int("CHAT_MAX_OUTPUT_TOKENS", 220, minimum=1)
     chat_idle_timeout_seconds = _env_int("CHAT_IDLE_TIMEOUT_SECONDS", 300, minimum=60)
+    chat_enable_web_search = _env_bool("CHAT_ENABLE_WEB_SEARCH", True)
 
     return Settings(
         token=token,
@@ -78,4 +91,5 @@ def load_settings() -> Settings:
         chat_temperature=chat_temperature,
         chat_max_output_tokens=chat_max_output_tokens,
         chat_idle_timeout_seconds=chat_idle_timeout_seconds,
+        chat_enable_web_search=chat_enable_web_search,
     )
