@@ -45,6 +45,9 @@
   - `Coming Next` section only when queue has items
 - Button controls (same style):
   - Previous, next, pause/resume, shuffle, stop
+  - Previous behavior:
+    - If current track elapsed time > 5s, restart current track from beginning.
+    - Otherwise move to previous track and put current track back at the front of queue.
 - Button actions should update/edit existing now-playing message and avoid extra feedback spam.
 
 # Automation

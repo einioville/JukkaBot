@@ -1,5 +1,7 @@
 # JukkaBot
 
+> Note: This is my training project. The goal is to learn using Codex as a development tool.
+
 Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 
 ## Features
@@ -26,6 +28,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
   - previous, next, pause/resume, shuffle, stop
+  - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
 - Control interactions edit the existing now-playing message (no extra feedback messages).
 - Audio filter presets available:
   - off, hiphop, edm, dance, vocal, pop, rock, trebleboost
@@ -70,8 +73,8 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
    ```
 3. Install FFmpeg and ensure `ffmpeg` is available on `PATH`.
 4. Configure `.env`:
-   - `DISCORD_BOT_TOKEN` (required)
-   - `ADMIN_USER_IDS` (optional, comma-separated user IDs)
+    - `DISCORD_BOT_TOKEN` (required)
+    - `ADMIN_USER_IDS` (optional, comma-separated user IDs; invalid entries are ignored)
    - `OPENAI_API_KEY` (required for `/chat on`)
    - `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
    - `CHAT_TEMPERATURE` (optional, default `0.8`)
