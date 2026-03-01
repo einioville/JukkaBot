@@ -9,6 +9,7 @@ import pytest
 
 from jukkabot.openai_service import (
     EMPTY_OUTPUT_FALLBACK_REPLY,
+    OpenAIQuotaExceededError,
     OpenAIService,
     OpenAIServiceError,
 )
@@ -330,3 +331,50 @@ def test_generate_image_uses_edits_endpoint_with_reference(
     assert b"Make this cinematic" in seen_body[0]
     assert result.image_bytes == b"edited-image"
     assert result.mime_type == "image/webp"
+
+
+def test_generate_image_maps_quota_exhausted_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        raise HTTPError(
+            url="https://api.openai.com/v1/images/generations",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"error":{"message":"You exceeded your current quota, please check your plan and billing details."}}'
+            ),
+        )
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    with pytest.raises(OpenAIQuotaExceededError):
+        service.generate_image("cat")
+
+
+def test_has_available_balance_returns_false_on_quota_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    calls = 0
+
+    def fake_urlopen(_request, timeout):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            url="https://api.openai.com/v1/responses",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"error":{"message":"insufficient_quota"}}'
+            ),
+        )
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    assert service.has_available_balance(force_refresh=True) is False
+    # Cached value should avoid a second probe immediately.
+    assert service.has_available_balance(force_refresh=False) is False
+    assert calls == 1

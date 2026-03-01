@@ -44,6 +44,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 - Chat mode:
   - `/chat action:on` enables AI chat in the current guild/channel
+  - `/chat action:on` is blocked if OpenAI API balance is exhausted
   - Reads all channel messages for context/history, but replies only when mentioned
   - Reads supported text attachments only from the mentioned message
   - Reads image attachments from mentioned messages for image understanding
@@ -58,6 +59,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Image generation:
   - `/image prompt:<text>` for text-to-image generation
   - `/image prompt:<text> reference_image:<attachment>` for reference/edit flows
+  - `/image` is blocked if OpenAI API balance is exhausted
   - Image generation uses a separate image model and a longer timeout (default 120s)
 
 ## Project Layout

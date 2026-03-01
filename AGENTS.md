@@ -21,11 +21,13 @@
 - `/chat`: chat mode for current channel (`on`, `off`).
   - One active chat channel per guild.
   - Auto-disable after 5 minutes of quiet.
+  - Enable is blocked when OpenAI API balance is exhausted.
   - Uses all channel messages as context; text/image attachments are read only when the bot is mentioned.
   - Replies only when the bot is mentioned.
   - Can occasionally send brainrot GIF links.
   - Supports dynamic-memory updates only when mentioned and message starts with `Muista: ...` (leading bot mention ignored in that check).
 - `/image`: generate images from prompt text, optionally with a reference/edit image attachment.
+  - Command is blocked when OpenAI API balance is exhausted.
   - Reference image types: `png`, `jpg`, `jpeg`, `webp`, `gif`.
   - Reference image size limit: 6 MB.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).

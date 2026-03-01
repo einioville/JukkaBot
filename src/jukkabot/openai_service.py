@@ -16,6 +16,10 @@ class OpenAIServiceError(RuntimeError):
     pass
 
 
+class OpenAIQuotaExceededError(OpenAIServiceError):
+    pass
+
+
 logger = logging.getLogger(__name__)
 DEFAULT_CHAT_SYSTEM_PROMPT = (
     "You are JukkaBot, a natural and friendly Discord chat participant. "
@@ -25,6 +29,7 @@ EMPTY_OUTPUT_FALLBACK_REPLY = "nah this is insane :D"
 MAX_INPUT_MESSAGE_CHARS = 3000
 MAX_TOTAL_INPUT_CHARS = 18000
 MAX_API_RETRIES = 3
+BALANCE_PROBE_CACHE_SECONDS = 60
 
 
 @dataclass(slots=True)
@@ -58,6 +63,40 @@ class OpenAIService:
         self.image_model = image_model.strip() or "gpt-image-1"
         self.base_url = "https://api.openai.com/v1/responses"
         self._unsupported_params: set[str] = set()
+        self._balance_status: bool | None = None
+        self._balance_status_checked_at: float = 0.0
+
+    def has_available_balance(self, *, force_refresh: bool = False) -> bool:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._balance_status is not None
+            and (now - self._balance_status_checked_at) < BALANCE_PROBE_CACHE_SECONDS
+        ):
+            return self._balance_status
+
+        try:
+            self._run_balance_probe()
+        except OpenAIQuotaExceededError:
+            self._set_balance_status(False)
+            return False
+        except OpenAIServiceError:
+            # Do not disable features based on transient/network issues.
+            self._set_balance_status(True)
+            return True
+        self._set_balance_status(True)
+        return True
+
+    def _set_balance_status(self, has_balance: bool) -> None:
+        self._balance_status = has_balance
+        self._balance_status_checked_at = time.monotonic()
+
+    def _run_balance_probe(self) -> None:
+        base_payload = {
+            "model": self.model,
+            "input": [{"role": "user", "content": "balance probe"}],
+        }
+        self._request_with_adaptive_payload(base_payload, {"max_output_tokens": 1})
 
     def generate_reply(
         self,
@@ -291,12 +330,18 @@ class OpenAIService:
             request = build_request()
             try:
                 with urlopen(request, timeout=timeout_seconds) as response:
+                    self._set_balance_status(True)
                     return response.read().decode("utf-8")
             except HTTPError as exc:
                 message = self._extract_error_message(exc)
                 if exc.code == 401:
                     raise OpenAIServiceError("OpenAI API key is invalid.") from exc
                 if exc.code == 429:
+                    if self._is_quota_exhausted_message(message):
+                        self._set_balance_status(False)
+                        raise OpenAIQuotaExceededError(
+                            "OpenAI API balance is exhausted."
+                        ) from exc
                     raise OpenAIServiceError("OpenAI API rate limit reached.") from exc
                 raise OpenAIServiceError(
                     f"OpenAI API request failed ({exc.code}): {message}"
@@ -414,6 +459,7 @@ class OpenAIService:
 
             try:
                 with urlopen(request, timeout=self.timeout_seconds) as response:
+                    self._set_balance_status(True)
                     return response.read().decode("utf-8")
             except HTTPError as exc:
                 message = self._extract_error_message(exc)
@@ -449,6 +495,11 @@ class OpenAIService:
                 if exc.code == 401:
                     raise OpenAIServiceError("OpenAI API key is invalid.") from exc
                 if exc.code == 429:
+                    if self._is_quota_exhausted_message(message):
+                        self._set_balance_status(False)
+                        raise OpenAIQuotaExceededError(
+                            "OpenAI API balance is exhausted."
+                        ) from exc
                     raise OpenAIServiceError("OpenAI API rate limit reached.") from exc
                 raise OpenAIServiceError(
                     f"OpenAI API request failed ({exc.code}): {message}"
@@ -600,6 +651,19 @@ class OpenAIService:
             or "invalid" in lowered
             or "unrecognized" in lowered
         )
+
+    def _is_quota_exhausted_message(self, message: str) -> bool:
+        lowered = message.casefold()
+        keywords = (
+            "insufficient_quota",
+            "insufficient quota",
+            "exceeded your current quota",
+            "billing",
+            "credit balance",
+            "out of credits",
+            "balance is exhausted",
+        )
+        return any(keyword in lowered for keyword in keywords)
 
     def _extract_error_message(self, exc: HTTPError) -> str:
         try:

@@ -15,7 +15,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from jukkabot.openai_service import OpenAIService, OpenAIServiceError
+from jukkabot.openai_service import (
+    OpenAIQuotaExceededError,
+    OpenAIService,
+    OpenAIServiceError,
+)
 
 logger = logging.getLogger(__name__)
 TEXT_ATTACHMENT_EXTENSIONS = {
@@ -206,6 +210,12 @@ class ChatCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        if not self.openai_service.has_available_balance(force_refresh=True):
+            await interaction.response.send_message(
+                "Chat mode is unavailable because OpenAI API balance is exhausted.",
+                ephemeral=True,
+            )
+            return
 
         existing = self.sessions.get(guild.id)
         if existing is not None and existing.channel_id == channel.id:
@@ -256,6 +266,12 @@ class ChatCog(commands.Cog):
         if self.openai_service is None:
             await interaction.response.send_message(
                 "Image generation is unavailable because OPENAI_API_KEY is not configured.",
+                ephemeral=True,
+            )
+            return
+        if not self.openai_service.has_available_balance(force_refresh=True):
+            await interaction.response.send_message(
+                "Image generation is unavailable because OpenAI API balance is exhausted.",
                 ephemeral=True,
             )
             return
@@ -697,6 +713,20 @@ class ChatCog(commands.Cog):
                         history,
                         use_web_search=True,
                     )
+            except OpenAIQuotaExceededError:
+                logger.warning(
+                    "Chat disabled in guild %s due to exhausted OpenAI balance.",
+                    message.guild.id,
+                )
+                await self._disable_session(message.guild.id, announce_in_channel=False)
+                try:
+                    await message.channel.send(
+                        "Chat mode turned off because OpenAI API balance is exhausted.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                return
             except OpenAIServiceError as exc:
                 logger.warning("Chat reply failed in guild %s: %s", message.guild.id, exc)
                 return
