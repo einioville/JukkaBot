@@ -46,7 +46,9 @@ def test_build_user_prompt_includes_text_attachment() -> None:
         ],
     )
 
-    prompt = asyncio.run(cog._build_user_prompt(msg))  # type: ignore[arg-type]
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=True)
+    )
 
     assert "check this" in prompt
     assert "[Attachment: notes.txt]" in prompt
@@ -72,10 +74,34 @@ def test_build_user_prompt_marks_unsupported_or_too_large() -> None:
         ],
     )
 
-    prompt = asyncio.run(cog._build_user_prompt(msg))  # type: ignore[arg-type]
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=True)
+    )
 
     assert "not a supported text file" in prompt
     assert "larger than" in prompt
+
+
+def test_build_user_prompt_skips_attachments_when_disabled() -> None:
+    cog = ChatCog.__new__(ChatCog)
+    msg = _FakeMessage(
+        content="check this",
+        attachments=[
+            _FakeAttachment(
+                filename="notes.txt",
+                content_type="text/plain",
+                payload=b"hello from file",
+            )
+        ],
+    )
+
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=False)
+    )
+
+    assert "check this" in prompt
+    assert "[Attachment: notes.txt]" not in prompt
+    assert "hello from file" not in prompt
 
 
 def test_build_user_prompt_truncates_long_attachment_text() -> None:
@@ -92,7 +118,9 @@ def test_build_user_prompt_truncates_long_attachment_text() -> None:
         ],
     )
 
-    prompt = asyncio.run(cog._build_user_prompt(msg))  # type: ignore[arg-type]
+    prompt = asyncio.run(  # type: ignore[arg-type]
+        cog._build_user_prompt(msg, include_attachments=True)
+    )
 
     assert len(prompt) < len(long_text) + 100
     assert prompt.endswith("...")
@@ -100,12 +128,14 @@ def test_build_user_prompt_truncates_long_attachment_text() -> None:
 
 def test_extract_memory_fact_payload() -> None:
     cog = ChatCog.__new__(ChatCog)
+    cog.bot = type("Bot", (), {"user": type("User", (), {"id": 123})()})()
 
+    assert cog._extract_memory_fact_payload("Muista: ville likes fortnite") == "ville likes fortnite"
     assert (
-        cog._extract_memory_fact_payload("remember that ville likes fortnite")
-        == "ville likes fortnite"
+        cog._extract_memory_fact_payload("<@123> Muista: Ville tykkaa fortnitesta")
+        == "Ville tykkaa fortnitesta"
     )
-    assert cog._extract_memory_fact_payload("muista et Ville tykkaa fortnitesta") is not None
+    assert cog._extract_memory_fact_payload("remember that ville likes fortnite") is None
     assert cog._extract_memory_fact_payload("just chatting") is None
 
 

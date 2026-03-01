@@ -21,10 +21,10 @@
 - `/chat`: chat mode for current channel (`on`, `off`).
   - One active chat channel per guild.
   - Auto-disable after 5 minutes of quiet.
-  - Uses message text and supported text attachments as context.
+  - Uses all channel messages as context; text attachments are read only when the bot is mentioned.
   - Replies only when the bot is mentioned.
   - Can occasionally send brainrot GIF links.
-  - Supports remember-instructions from chat messages to store user facts.
+  - Supports dynamic-memory updates only when mentioned and message starts with `Muista: ...` (leading bot mention ignored in that check).
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).

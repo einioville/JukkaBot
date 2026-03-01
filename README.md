@@ -39,9 +39,10 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 - Chat mode:
   - `/chat action:on` enables AI chat in the current guild/channel
-  - Reads supported text attachments from messages and uses them as context
+  - Reads all channel messages for context/history, but replies only when mentioned
+  - Reads supported text attachments only from the mentioned message
   - Bot replies only when it is mentioned in chat
-  - If users send `remember ...` / `remember that ...` (also `muista ...`), bot stores user facts
+  - Dynamic memory updates only when the bot is mentioned and message starts with `Muista: ...` (leading bot mention is ignored in this check)
   - Stored facts are reused in later replies for continuity
   - Handles long model replies by splitting them into multiple Discord messages
   - Occasionally sends brainrot GIF links
@@ -98,7 +99,6 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Chat prompt is loaded from `config.json` key `chat.system_prompt_file` (project-relative file path).
 - Prompt files under `resources/prompts/*.txt` are ignored by git; keep your personal prompt there locally.
 - OpenAI model parameter support is auto-detected at runtime (unsupported parameters are disabled and retried automatically).
-- `temperature` parameter is currently not sent to the API (temporary compatibility mode).
 - OpenAI timeouts are retried automatically with short backoff.
 
 ### Chat Prompt Config

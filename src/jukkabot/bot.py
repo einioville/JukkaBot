@@ -44,6 +44,7 @@ class JukkaBot(commands.Bot):
         self.chat_user_names_by_guild: dict[int, dict[int, str]] = {}
         self.chat_idle_timeout_seconds = settings.chat_idle_timeout_seconds
         self.config_path = Path(__file__).resolve().parents[2] / "config.json"
+        self._chat_prompt_sync_task: asyncio.Task[None] | None = None
         self.openai_service: OpenAIService | None = None
         self._load_persistent_config()
         if settings.openai_api_key:
@@ -148,7 +149,7 @@ class JukkaBot(commands.Bot):
         if cleaned_name:
             guild_names = self.chat_user_names_by_guild.setdefault(guild_id, {})
             guild_names[user_id] = cleaned_name
-        self._sync_dynamic_memory_to_prompt_file()
+        self.request_chat_prompt_sync()
         return True
 
     def get_chat_user_facts(self, guild_id: int) -> dict[int, list[str]]:
@@ -299,6 +300,27 @@ class JukkaBot(commands.Bot):
         if openai_service is not None:
             openai_service.system_prompt = self.chat_system_prompt
 
+    async def _sync_dynamic_memory_to_prompt_file_async(self) -> None:
+        try:
+            await asyncio.to_thread(self._sync_dynamic_memory_to_prompt_file)
+        except Exception:
+            logging.exception("Async chat prompt sync failed.")
+
+    def request_chat_prompt_sync(self) -> None:
+        prompt_file = getattr(self, "chat_system_prompt_file", None)
+        if not isinstance(prompt_file, str) or not prompt_file.strip():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        existing_task = getattr(self, "_chat_prompt_sync_task", None)
+        if existing_task is not None and not existing_task.done():
+            return
+        self._chat_prompt_sync_task = loop.create_task(
+            self._sync_dynamic_memory_to_prompt_file_async()
+        )
+
     def _save_persistent_config(self) -> None:
         self._sync_dynamic_memory_to_prompt_file()
         if self.openai_service is not None:
@@ -357,6 +379,12 @@ class JukkaBot(commands.Bot):
             logging.info("Connected as %s (%s)", self.user.name, self.user.id)
 
     async def close(self) -> None:
+        pending_sync = getattr(self, "_chat_prompt_sync_task", None)
+        if pending_sync is not None and not pending_sync.done():
+            try:
+                await pending_sync
+            except Exception:
+                logging.exception("Pending chat prompt sync failed during shutdown.")
         self._save_persistent_config()
         await super().close()
 

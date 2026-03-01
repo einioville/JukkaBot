@@ -69,7 +69,7 @@ BRAINROT_GIF_URLS = (
     "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWN3NXU4Y2hwN3N6eDZ4bW1wajk2NnljcGc3M3djY3llMjI2M3cybiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/xT0xeJpnrWC4XWblEk/giphy.gif",
 )
 REMEMBER_COMMAND_PATTERN = re.compile(
-    r"^\s*(?:jukka[\s,:-]*)?(?:remember(?:\s+that)?|muista(?:\s+että| et)?)\s+(.+)$",
+    r"^\s*muista\s*:\s*(.+)$",
     flags=re.IGNORECASE,
 )
 
@@ -214,39 +214,45 @@ class ChatCog(commands.Cog):
         suffix = Path(attachment.filename).suffix.casefold()
         return suffix in TEXT_ATTACHMENT_EXTENSIONS
 
-    async def _build_user_prompt(self, message: discord.Message) -> str:
+    async def _build_user_prompt(
+        self,
+        message: discord.Message,
+        *,
+        include_attachments: bool,
+    ) -> str:
         parts: list[str] = []
         base_text = message.content.strip()
         if base_text:
             parts.append(base_text)
 
-        for attachment in message.attachments[:MAX_ATTACHMENTS_PER_MESSAGE]:
-            if attachment.size > MAX_ATTACHMENT_BYTES:
-                parts.append(
-                    f"[Attachment omitted: {attachment.filename} is larger than "
-                    f"{MAX_ATTACHMENT_BYTES // 1024}KB]"
-                )
-                continue
-            if not self._is_supported_text_attachment(attachment):
-                parts.append(
-                    f"[Attachment omitted: {attachment.filename} is not a supported text file]"
-                )
-                continue
+        if include_attachments:
+            for attachment in message.attachments[:MAX_ATTACHMENTS_PER_MESSAGE]:
+                if attachment.size > MAX_ATTACHMENT_BYTES:
+                    parts.append(
+                        f"[Attachment omitted: {attachment.filename} is larger than "
+                        f"{MAX_ATTACHMENT_BYTES // 1024}KB]"
+                    )
+                    continue
+                if not self._is_supported_text_attachment(attachment):
+                    parts.append(
+                        f"[Attachment omitted: {attachment.filename} is not a supported text file]"
+                    )
+                    continue
 
-            try:
-                data = await attachment.read()
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                parts.append(f"[Attachment omitted: failed to read {attachment.filename}]")
-                continue
+                try:
+                    data = await attachment.read()
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    parts.append(f"[Attachment omitted: failed to read {attachment.filename}]")
+                    continue
 
-            text = data.decode("utf-8", errors="replace").strip()
-            if not text:
-                parts.append(f"[Attachment note: {attachment.filename} is empty]")
-                continue
-            if len(text) > MAX_ATTACHMENT_TEXT_CHARS:
-                text = f"{text[:MAX_ATTACHMENT_TEXT_CHARS]}..."
+                text = data.decode("utf-8", errors="replace").strip()
+                if not text:
+                    parts.append(f"[Attachment note: {attachment.filename} is empty]")
+                    continue
+                if len(text) > MAX_ATTACHMENT_TEXT_CHARS:
+                    text = f"{text[:MAX_ATTACHMENT_TEXT_CHARS]}..."
 
-            parts.append(f"[Attachment: {attachment.filename}]\n{text}")
+                parts.append(f"[Attachment: {attachment.filename}]\n{text}")
 
         combined = "\n\n".join(parts).strip()
         if len(combined) > MAX_MESSAGE_CONTEXT_CHARS:
@@ -306,7 +312,8 @@ class ChatCog(commands.Cog):
         return combined
 
     def _extract_memory_fact_payload(self, content: str) -> str | None:
-        match = REMEMBER_COMMAND_PATTERN.match(content)
+        normalized = self._strip_leading_bot_mention(content)
+        match = REMEMBER_COMMAND_PATTERN.match(normalized)
         if not match:
             return None
         payload = match.group(1).strip()
@@ -377,6 +384,20 @@ class ChatCog(commands.Cog):
             )
         return added
 
+    def _strip_leading_bot_mention(self, content: str) -> str:
+        bot = getattr(self, "bot", None)
+        bot_user = getattr(bot, "user", None)
+        if bot_user is None:
+            return content
+        stripped = content.lstrip()
+        mention_plain = f"<@{bot_user.id}>"
+        mention_nick = f"<@!{bot_user.id}>"
+        if stripped.startswith(mention_plain):
+            return stripped[len(mention_plain) :].lstrip()
+        if stripped.startswith(mention_nick):
+            return stripped[len(mention_nick) :].lstrip()
+        return content
+
     def _is_bot_mentioned(self, message: discord.Message) -> bool:
         if self.bot.user is None:
             return False
@@ -425,7 +446,11 @@ class ChatCog(commands.Cog):
             return
 
         session.last_human_message_at = datetime.now(UTC)
-        prompt = await self._build_user_prompt(message)
+        is_mentioned = self._is_bot_mentioned(message)
+        prompt = await self._build_user_prompt(
+            message,
+            include_attachments=is_mentioned,
+        )
         if not prompt:
             return
         user_display_name = (
@@ -442,9 +467,12 @@ class ChatCog(commands.Cog):
         participant.message_count += 1
         participant.last_message = prompt[:300]
         session.messages_since_last_reply += 1
-        self._remember_user_fact(message, session)
-        if not self._is_bot_mentioned(message):
+        session.history.append(
+            {"role": "user", "content": f"{user_display_name}: {prompt}"}
+        )
+        if not is_mentioned:
             return
+        self._remember_user_fact(message, session)
 
         lock = self._reply_locks.setdefault(message.guild.id, asyncio.Lock())
         async with lock:
@@ -452,9 +480,6 @@ class ChatCog(commands.Cog):
             if active_session is None or active_session.channel_id != message.channel.id:
                 return
 
-            active_session.history.append(
-                {"role": "user", "content": f"{user_display_name}: {prompt}"}
-            )
             history = list(active_session.history)
             memory_block = self._build_participant_memory(active_session)
             if memory_block:

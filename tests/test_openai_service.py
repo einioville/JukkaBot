@@ -85,7 +85,37 @@ def test_generate_reply_retries_without_unsupported_parameter(
     assert reply == "Recovered"
     assert "max_output_tokens" in payloads[0]
     assert "max_output_tokens" not in payloads[1]
-    assert "temperature" not in payloads[0]
+    assert payloads[0]["temperature"] == 0.8
+    assert payloads[1]["temperature"] == 0.8
+
+
+def test_generate_reply_retries_without_unsupported_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = OpenAIService(api_key="fake")
+    payloads: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        payload = json.loads(request.data.decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise HTTPError(
+                url="https://api.openai.com/v1/responses",
+                code=400,
+                msg="Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"Unsupported parameter: \'temperature\' is not supported with this model."}}'
+                ),
+            )
+        return _FakeResponse({"output_text": "Recovered"})
+
+    monkeypatch.setattr("jukkabot.openai_service.urlopen", fake_urlopen)
+    reply = service.generate_reply([{"role": "user", "content": "Hi"}])
+
+    assert reply == "Recovered"
+    assert payloads[0]["temperature"] == 0.8
+    assert "temperature" not in payloads[1]
 
 
 def test_generate_reply_falls_back_on_empty_output(

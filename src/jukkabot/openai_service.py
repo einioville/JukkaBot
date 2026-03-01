@@ -53,6 +53,7 @@ class OpenAIService:
         }
         optional_payload = {
             "max_output_tokens": self.max_output_tokens,
+            "temperature": self.temperature,
         }
         raw = self._request_with_adaptive_payload(base_payload, optional_payload)
         payload_data = self._parse_response_payload(raw)
@@ -184,8 +185,6 @@ class OpenAIService:
 
     def _build_input_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         system_prompt = self.system_prompt.strip()
-        if len(system_prompt) > MAX_INPUT_MESSAGE_CHARS:
-            system_prompt = f"{system_prompt[:MAX_INPUT_MESSAGE_CHARS]}..."
         input_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
         cleaned: list[dict[str, str]] = []
