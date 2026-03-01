@@ -46,6 +46,15 @@ class NowPlayingControls(discord.ui.View):
         super().__init__(timeout=3600)
         self.cog = cog
         self.guild_id = guild_id
+        self._sync_repeat_button_style()
+
+    def _sync_repeat_button_style(self) -> None:
+        state = self.cog.queue_manager.get(self.guild_id)
+        self.repeat_button.style = (
+            discord.ButtonStyle.success
+            if state.repeat_current
+            else discord.ButtonStyle.secondary
+        )
 
     async def _validate(self, interaction: discord.Interaction) -> discord.Guild | None:
         guild = interaction.guild or self.cog.bot.get_guild(self.guild_id)
@@ -118,6 +127,23 @@ class NowPlayingControls(discord.ui.View):
             await self.cog._send_now_playing(
                 guild, current_channel, state.current_track, edit_existing=True
             )
+        self.cog._touch_activity(guild.id)
+
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
+    async def repeat_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer()
+        guild = await self._validate(interaction)
+        if guild is None:
+            return
+
+        state = self.cog.queue_manager.get(guild.id)
+        state.repeat_current = not state.repeat_current
+        self._sync_repeat_button_style()
+        await self.cog._refresh_now_playing(
+            guild, interaction.channel_id, edit_existing=True
+        )
         self.cog._touch_activity(guild.id)
 
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.secondary)
@@ -383,10 +409,12 @@ class MusicCog(commands.Cog):
         if image_url:
             embed.set_image(url=image_url)
 
+        controls = NowPlayingControls(self, guild.id)
+
         if edit_existing and state.now_playing_message_id:
             old_message = channel.get_partial_message(state.now_playing_message_id)
             try:
-                await old_message.edit(embed=embed)
+                await old_message.edit(embed=embed, view=controls)
                 return
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
@@ -398,7 +426,6 @@ class MusicCog(commands.Cog):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
-        controls = NowPlayingControls(self, guild.id)
         message = await channel.send(embed=embed, view=controls)
         state.now_playing_message_id = message.id
 
@@ -410,6 +437,7 @@ class MusicCog(commands.Cog):
     ) -> None:
         state = self.queue_manager.get(guild.id)
         if state.current_track is None:
+            await self._delete_now_playing_message(guild, fallback_channel_id)
             return
         channel = self._resolve_announce_channel(guild, fallback_channel_id)
         await self._send_now_playing(
@@ -533,7 +561,16 @@ class MusicCog(commands.Cog):
             logger.error("Playback error in guild %s: %s", guild_id, error)
 
         state = self.queue_manager.get(guild_id)
-        self.queue_manager.finish_current(guild_id, add_to_history=not state.skip_requested)
+        should_repeat = (
+            state.repeat_current
+            and not state.skip_requested
+            and state.current_track is not None
+        )
+        if should_repeat and state.current_track is not None:
+            state.queue.appendleft(state.current_track)
+        self.queue_manager.finish_current(
+            guild_id, add_to_history=not state.skip_requested and not should_repeat
+        )
         state.skip_requested = False
         self._playback_started_at.pop(guild_id, None)
         self._paused_started_at.pop(guild_id, None)
@@ -561,6 +598,7 @@ class MusicCog(commands.Cog):
 
             track = self.queue_manager.pop_next(guild.id)
             if track is None:
+                await self._delete_now_playing_message(guild, fallback_channel_id)
                 self._touch_activity(guild.id)
                 return
 
