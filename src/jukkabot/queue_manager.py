@@ -21,6 +21,7 @@ class GuildQueue:
     now_playing_channel_id: int | None = None
     skip_requested: bool = False
     repeat_current: bool = False
+    clear_requested: bool = False
 
 
 class QueueManager:
@@ -107,6 +108,7 @@ class QueueManager:
         guild_queue.now_playing_channel_id = None
         guild_queue.skip_requested = False
         guild_queue.repeat_current = False
+        guild_queue.clear_requested = False
 
     def to_persistent_state(self) -> dict[str, dict[str, object]]:
         state: dict[str, dict[str, object]] = {}

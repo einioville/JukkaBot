@@ -41,6 +41,9 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
 }
 PAUSE_EMOJI = "⏸️"
 RESUME_EMOJI = "▶️"
+AUTOCOMPLETE_STATE_TTL_SECONDS = 15 * 60
+AUTOCOMPLETE_STATE_MAX_ENTRIES = 1000
+IDLE_PRESENCE_TEXT = "Vitun Pellet"
 
 
 class NowPlayingControls(discord.ui.View):
@@ -245,10 +248,12 @@ class MusicCog(commands.Cog):
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
         self._autocomplete_request_seq: dict[tuple[int, int], int] = {}
+        self._autocomplete_request_seen_at: dict[tuple[int, int], float] = {}
         self._playback_started_at: dict[int, float] = {}
         self._paused_started_at: dict[int, float] = {}
         self._paused_accumulated_seconds: dict[int, float] = {}
         self._pending_seek_seconds: dict[int, float] = {}
+        self._last_presence_text: str | None = None
         self.idle_disconnect.start()
 
     def cog_unload(self) -> None:
@@ -256,6 +261,72 @@ class MusicCog(commands.Cog):
 
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
+
+    @staticmethod
+    def _looks_like_url(value: str) -> bool:
+        candidate = value.strip().casefold()
+        return candidate.startswith("http://") or candidate.startswith("https://")
+
+    def _drop_autocomplete_state_for_guild(self, guild_id: int) -> None:
+        keys = [key for key in self._autocomplete_request_seq if key[0] == guild_id]
+        for key in keys:
+            self._autocomplete_request_seq.pop(key, None)
+            self._autocomplete_request_seen_at.pop(key, None)
+
+    def _prune_autocomplete_request_state(self, *, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        stale_before = current - AUTOCOMPLETE_STATE_TTL_SECONDS
+
+        stale_keys = [
+            key
+            for key, seen_at in self._autocomplete_request_seen_at.items()
+            if seen_at < stale_before
+        ]
+        for key in stale_keys:
+            self._autocomplete_request_seq.pop(key, None)
+            self._autocomplete_request_seen_at.pop(key, None)
+
+        overflow = len(self._autocomplete_request_seq) - AUTOCOMPLETE_STATE_MAX_ENTRIES
+        if overflow <= 0:
+            return
+        oldest = sorted(
+            self._autocomplete_request_seen_at.items(),
+            key=lambda item: item[1],
+        )
+        for key, _ in oldest[:overflow]:
+            self._autocomplete_request_seq.pop(key, None)
+            self._autocomplete_request_seen_at.pop(key, None)
+
+    def _presence_text(self) -> str:
+        bot = getattr(self, "bot", None)
+        guilds = getattr(bot, "guilds", [])
+        for guild in guilds:
+            state = self.queue_manager.get(guild.id)
+            if state.current_track is None:
+                continue
+            title = " ".join(state.current_track.title.split()) or "Unknown track"
+            if len(title) > 96:
+                title = f"{title[:93]}..."
+            return f"Playing: {title}"
+        return IDLE_PRESENCE_TEXT
+
+    async def _sync_presence(self) -> None:
+        bot = getattr(self, "bot", None)
+        changer = getattr(bot, "change_presence", None)
+        if not callable(changer):
+            return
+        next_text = self._presence_text()
+        if getattr(self, "_last_presence_text", None) == next_text:
+            return
+        try:
+            await changer(activity=discord.CustomActivity(name=next_text))
+            self._last_presence_text = next_text
+        except discord.DiscordException:
+            try:
+                await changer(activity=discord.Game(name=next_text))
+                self._last_presence_text = next_text
+            except discord.DiscordException:
+                logger.exception("Failed to update bot presence to '%s'.", next_text)
 
     @staticmethod
     def _guild_name(guild: object | None) -> str:
@@ -391,6 +462,7 @@ class MusicCog(commands.Cog):
         queued_count = len(state.queue)
         history_count = len(state.history)
         self.queue_manager.clear(guild_id)
+        self._drop_autocomplete_state_for_guild(guild_id)
         self.last_active_by_guild.pop(guild_id, None)
         self._clear_playback_clock(guild_id)
         logger.info(
@@ -439,6 +511,7 @@ class MusicCog(commands.Cog):
         )
         await self._delete_now_playing_message(guild, fallback_channel_id)
         self._clear_guild_voice_state(guild)
+        await self._sync_presence()
 
     async def _leave_voice(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
@@ -509,7 +582,7 @@ class MusicCog(commands.Cog):
 
         user_channel = self._current_voice_channel(interaction)
         bot_voice = guild.voice_client
-        if bot_voice is None:
+        if bot_voice is None or bot_voice.channel is None:
             return True, user_channel
 
         if user_channel is not None and bot_voice.channel.id == user_channel.id:
@@ -768,6 +841,7 @@ class MusicCog(commands.Cog):
             self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
             self._guild_name(guild),
         )
+        await self._sync_presence()
         await self._send_now_playing(guild, announce_channel, track)
 
     async def _after_track_finished(
@@ -782,6 +856,19 @@ class MusicCog(commands.Cog):
             getattr(guild.voice_client, "channel", None), fallback="Unknown voice channel"
         )
         guild_name = self._guild_name(guild)
+        if state.clear_requested:
+            self.queue_manager.finish_current(guild_id, add_to_history=False)
+            state.skip_requested = False
+            self._playback_started_at.pop(guild_id, None)
+            self._paused_started_at.pop(guild_id, None)
+            self._paused_accumulated_seconds.pop(guild_id, None)
+            logger.info(
+                "Suppressed auto-advance after '%s' in guild '%s' due to pending clear.",
+                self._track_name(finished_track),
+                guild_name,
+            )
+            await self._sync_presence()
+            return
         if error:
             logger.error(
                 "Playback error for '%s' in channel '%s' at guild '%s': %s",
@@ -855,6 +942,7 @@ class MusicCog(commands.Cog):
             if track is None:
                 await self._delete_now_playing_message(guild, fallback_channel_id)
                 self._touch_activity(guild.id)
+                await self._sync_presence()
                 logger.info(
                     "Playback ended at channel '%s' at server '%s' (queue is empty).",
                     self._channel_name(
@@ -943,6 +1031,10 @@ class MusicCog(commands.Cog):
     async def before_idle_disconnect(self) -> None:
         await self.bot.wait_until_ready()
 
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        await self._sync_presence()
+
     @app_commands.command(name="join", description="Join your current voice channel.")
     async def join(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -964,7 +1056,18 @@ class MusicCog(commands.Cog):
             self.queue_manager.set_text_channel(guild.id, interaction.channel_id)
 
         bot_voice = guild.voice_client
-        if bot_voice and bot_voice.channel.id == user_channel.id:
+        if bot_voice is not None and bot_voice.channel is None:
+            try:
+                await bot_voice.disconnect(force=True)
+            except discord.DiscordException:
+                logger.warning(
+                    "Failed to reset stale voice client in guild '%s'.",
+                    self._guild_name(guild),
+                )
+            bot_voice = guild.voice_client
+        bot_channel = bot_voice.channel if bot_voice is not None else None
+
+        if bot_channel is not None and bot_channel.id == user_channel.id:
             await self._ack_silent(interaction)
             logger.info(
                 "%s requested /join while bot was already in channel '%s' at guild '%s'.",
@@ -975,15 +1078,15 @@ class MusicCog(commands.Cog):
             await self._finalize_silent(interaction)
             return
 
-        if bot_voice and bot_voice.channel.id != user_channel.id:
-            humans_in_bot_channel = [m for m in bot_voice.channel.members if not m.bot]
+        if bot_channel is not None and bot_channel.id != user_channel.id:
+            humans_in_bot_channel = [m for m in bot_channel.members if not m.bot]
             if humans_in_bot_channel:
                 logger.info(
                     "%s tried moving bot to '%s' at guild '%s', but bot is active in '%s'.",
                     requester_name,
                     self._channel_name(user_channel, fallback="Unknown voice channel"),
                     self._guild_name(guild),
-                    self._channel_name(bot_voice.channel, fallback="Unknown voice channel"),
+                    self._channel_name(bot_channel, fallback="Unknown voice channel"),
                 )
                 await interaction.response.send_message(
                     "Bot is active in another channel and cannot switch yet.",
@@ -1001,6 +1104,14 @@ class MusicCog(commands.Cog):
                 self._guild_name(guild),
             )
             await self._finalize_silent(interaction)
+            return
+
+        if bot_voice is not None and bot_channel is None:
+            await self._send_followup_and_finalize(
+                interaction,
+                "Voice client is in an invalid state. Try again.",
+                ephemeral=True,
+            )
             return
 
         try:
@@ -1033,9 +1144,12 @@ class MusicCog(commands.Cog):
     async def play_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
+        now = time.monotonic()
+        self._prune_autocomplete_request_state(now=now)
         request_key = (interaction.guild_id or 0, interaction.user.id)
         request_id = self._autocomplete_request_seq.get(request_key, 0) + 1
         self._autocomplete_request_seq[request_key] = request_id
+        self._autocomplete_request_seen_at[request_key] = now
 
         query = current.strip()
         if len(query) < 2:
@@ -1046,6 +1160,7 @@ class MusicCog(commands.Cog):
         await asyncio.sleep(0.5)
         if self._autocomplete_request_seq.get(request_key) != request_id:
             return []
+        self._autocomplete_request_seen_at[request_key] = time.monotonic()
 
         try:
             tracks = await asyncio.to_thread(self.music_service.search, query)
@@ -1056,8 +1171,8 @@ class MusicCog(commands.Cog):
         seen_values: set[str] = set()
         for track in tracks:
             # Discord choice limits: max 25 choices, and name/value <= 100 chars.
-            value = track.title.strip()[:100]
-            if not value or value in seen_values:
+            value = track.url.strip()
+            if not value or len(value) > 100 or value in seen_values:
                 continue
             label = f"{track.title[:60]} - {track.author[:30]}".strip()[:100]
             choices.append(app_commands.Choice(name=label, value=value))
@@ -1181,6 +1296,15 @@ class MusicCog(commands.Cog):
             self.queue_manager.set_text_channel(guild.id, interaction.channel_id)
 
         bot_voice = guild.voice_client
+        if bot_voice is not None and bot_voice.channel is None:
+            try:
+                await bot_voice.disconnect(force=True)
+            except discord.DiscordException:
+                logger.warning(
+                    "Failed to reset stale voice client for /play in guild '%s'.",
+                    self._guild_name(guild),
+                )
+            bot_voice = guild.voice_client
         if bot_voice is None:
             try:
                 bot_voice = await user_channel.connect()
@@ -1205,8 +1329,23 @@ class MusicCog(commands.Cog):
                 )
                 return
 
+        if bot_voice.channel is None:
+            await self._send_followup_and_finalize(
+                interaction,
+                "Voice client is in an invalid state. Try again.",
+                ephemeral=True,
+            )
+            return
+
+        normalized_query = query.strip()
         try:
-            tracks = await asyncio.to_thread(self.music_service.search, query)
+            if self._looks_like_url(normalized_query):
+                track = await asyncio.to_thread(
+                    self.music_service.get_track, normalized_query
+                )
+                tracks = [track]
+            else:
+                tracks = await asyncio.to_thread(self.music_service.search, normalized_query)
         except Exception as exc:
             await self._send_followup_and_finalize(
                 interaction,
@@ -1335,6 +1474,7 @@ class MusicCog(commands.Cog):
         await self._ack_silent(interaction)
         voice = guild.voice_client
         state = self.queue_manager.get(guild.id)
+        state.clear_requested = True
         if voice is not None and (voice.is_playing() or voice.is_paused()):
             state.skip_requested = True
             voice.stop()
@@ -1343,6 +1483,7 @@ class MusicCog(commands.Cog):
         current_track_name = self._track_name(state.current_track)
         self.queue_manager.clear(guild.id)
         self._touch_activity(guild.id)
+        await self._sync_presence()
         logger.info(
             "%s cleared playback state in guild '%s' (previous track: '%s').",
             self._user_name(interaction.user),

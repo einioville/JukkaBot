@@ -14,9 +14,11 @@
 - `/play`: search + queue track, auto-join user channel if needed.
   - Autocomplete uses trailing debounce (500ms after user stops typing).
   - No autocomplete result caching.
+  - Autocomplete selections resolve by exact track URL value.
 - `/skip`: skip current track.
 - `/pause`: toggle pause/resume.
 - `/clear`: clear queue/history/current track and delete now-playing message.
+  - Clear is a hard-stop operation: pending playback callbacks must not auto-advance to the next track after `/clear`.
 - `/leave`: disconnect from voice and clear queue/history/current state.
 - `/chat`: chat mode for current channel (`on`, `off`).
   - One active chat channel per guild.
@@ -50,8 +52,9 @@
   - Video thumbnail image
   - `Coming Next` section only when queue has items
 - Button controls (same style):
-  - Previous, next, pause/resume, repeat, stop
-  - Shuffle logic exists but its now-playing button is currently hidden.
+  - Repeat, previous, pause/resume, next, stop
+  - Pause/resume button icon is state-based (`⏸️` while playing, `▶️` while paused).
+  - Shuffle logic exists but its now-playing button is hidden.
   - Repeat behavior:
     - If repeat is enabled, current track loops until repeat is disabled.
     - Repeat button active color should match now-playing green (Spotify green).
@@ -68,6 +71,9 @@
   - no current track
   - empty queue
 - If bot is kicked/disconnected/leaves, clear queue state and delete now-playing message.
+- Bot presence text:
+  - Idle text: `Vitun Pellet`
+  - Active playback text: `Playing: <track title>`
 
 # Persistence
 - Persist minimal per-guild config to root `config.json` on shutdown:

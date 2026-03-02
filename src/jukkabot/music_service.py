@@ -50,6 +50,56 @@ class MusicService:
             )
         return results
 
+    def get_track(self, video_url: str) -> Track:
+        if not video_url.strip():
+            raise RuntimeError("Track URL is empty.")
+
+        info_options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+        }
+        with YoutubeDL(info_options) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        if not info:
+            raise RuntimeError("No track information returned.")
+
+        if isinstance(info, dict):
+            entries = info.get("entries")
+            if isinstance(entries, list) and entries:
+                first = entries[0]
+                if isinstance(first, dict):
+                    info = first
+
+        if not isinstance(info, dict):
+            raise RuntimeError("Invalid track information.")
+
+        resolved_url = (
+            info.get("webpage_url")
+            or info.get("original_url")
+            or info.get("url")
+            or video_url
+        )
+        if not isinstance(resolved_url, str) or not resolved_url.strip():
+            resolved_url = video_url
+        if not resolved_url.startswith("http"):
+            resolved_url = f"https://www.youtube.com/watch?v={resolved_url}"
+
+        raw_duration = info.get("duration") or 0
+        try:
+            duration_seconds = int(raw_duration)
+        except (TypeError, ValueError):
+            duration_seconds = 0
+
+        return Track(
+            title=info.get("title") or "Unknown title",
+            url=resolved_url,
+            author=info.get("uploader") or info.get("channel") or "Unknown author",
+            duration_seconds=duration_seconds,
+            thumbnail_url=info.get("thumbnail"),
+        )
+
     def get_stream_source(self, video_url: str) -> StreamSource:
         stream_options = {
             "quiet": True,

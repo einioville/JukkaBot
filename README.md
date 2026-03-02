@@ -22,14 +22,16 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Per-server queue, history, and moderation state.
 - Tracks store who queued them.
 - `/play` autocomplete uses trailing debounce (500 ms) and does not cache results.
+- Autocomplete selections for `/play` carry the exact track URL value so selected suggestions resolve to the intended track.
 - Now-playing embed includes:
   - playing/paused status
   - title, author, length, queued-by
   - video image
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
-  - previous, next, pause/resume, repeat, stop
-  - shuffle logic exists but is currently hidden from now-playing controls
+  - repeat, previous, pause/resume, next, stop
+  - pause/resume button swaps emoji by state (`⏸️` while playing, `▶️` while paused)
+  - shuffle logic exists in code but is not shown in now-playing controls
   - repeat loops the currently playing track until toggled off
   - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
   - if music commands are used from another channel, now-playing moves to that channel and old message is deleted
@@ -40,6 +42,9 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Filter changes are applied mid-playback by restarting from the current playback position.
 - Queue and now-playing cleanup when bot leaves, is disconnected, or is kicked.
 - Auto-disconnect after 5 minutes of idle playback state (not playing, not paused, no current track, empty queue).
+- Bot member-list presence is updated dynamically:
+  - idle: `Vitun Pellet`
+  - during playback: `Playing: <track title>`
 - Persistent config in project-root `config.json`:
   - banned users per guild
   - active equalizer/filter preset per guild

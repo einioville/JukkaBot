@@ -9,11 +9,17 @@ from jukkabot.queue_manager import QueueManager
 
 class _FakeVoiceClient:
     def __init__(
-        self, *, playing: bool = True, paused: bool = False, connected: bool = True
+        self,
+        *,
+        playing: bool = True,
+        paused: bool = False,
+        connected: bool = True,
+        channel: object | None = None,
     ) -> None:
         self._playing = playing
         self._paused = paused
         self._connected = connected
+        self.channel = channel
         self.stopped = False
 
     def is_playing(self) -> bool:
@@ -30,6 +36,11 @@ class _FakeVoiceClient:
         self._playing = False
         self._paused = False
 
+    async def disconnect(self, force: bool = False) -> None:
+        del force
+        self._connected = False
+        self.channel = None
+
 
 class _FakeGuild:
     def __init__(
@@ -39,6 +50,7 @@ class _FakeGuild:
         channels: dict[int, object] | None = None,
     ) -> None:
         self.id = guild_id
+        self.name = f"guild-{guild_id}"
         self.voice_client = voice_client
         self._channels = channels or {}
 
@@ -85,11 +97,38 @@ class _FakeTextChannel:
 class _FakeBot:
     def __init__(self, guild: _FakeGuild) -> None:
         self._guild = guild
+        self.guilds = [guild]
+        self.presence_updates: list[object] = []
 
     def get_guild(self, guild_id: int) -> _FakeGuild | None:
         if guild_id == self._guild.id:
             return self._guild
         return None
+
+    async def change_presence(self, *, activity=None) -> None:  # noqa: ANN001
+        self.presence_updates.append(activity)
+
+
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, bool]] = []
+
+    async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+        self.messages.append((content, ephemeral))
+
+
+class _FakeUser:
+    def __init__(self) -> None:
+        self.id = 123
+        self.display_name = "tester"
+        self.name = "tester"
+
+
+class _FakeInteraction:
+    def __init__(self, guild: _FakeGuild) -> None:
+        self.guild = guild
+        self.user = _FakeUser()
+        self.response = _FakeResponse()
 
 
 def _track(name: str) -> Track:
@@ -287,3 +326,80 @@ def test_delete_now_playing_prefers_stored_message_channel_over_fallback() -> No
     assert old_message.deleted is True
     assert state.now_playing_message_id is None
     assert state.now_playing_channel_id is None
+
+
+def test_after_track_finished_suppresses_auto_advance_when_clear_is_pending() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    cog._playback_started_at = {1: 1.0}
+    cog._paused_started_at = {1: 2.0}
+    cog._paused_accumulated_seconds = {1: 3.0}
+    cog._pending_seek_seconds = {}
+    cog._last_presence_text = None
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    bot = _FakeBot(guild)
+    cog.bot = bot
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.clear_requested = True
+
+    played_next: list[int] = []
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del fallback_channel_id
+        played_next.append(target_guild.id)
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert state.current_track is None
+    assert [track.title for track in state.queue] == ["next"]
+    assert played_next == []
+    assert bot.presence_updates
+
+
+def test_validate_channel_access_allows_when_voice_client_has_no_channel() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True, channel=None)
+    guild = _FakeGuild(1, voice)
+    interaction = _FakeInteraction(guild)
+    user_channel = object()
+    cog._current_voice_channel = lambda _interaction: user_channel  # type: ignore[assignment]
+
+    is_allowed, returned_channel = asyncio.run(
+        cog._validate_channel_access(interaction)  # type: ignore[arg-type]
+    )
+
+    assert is_allowed is True
+    assert returned_channel is user_channel
+    assert interaction.response.messages == []
+
+
+def test_prune_autocomplete_request_state_removes_stale_entries() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog._autocomplete_request_seq = {
+        (1, 11): 1,
+        (1, 12): 2,
+        (2, 21): 3,
+    }
+    cog._autocomplete_request_seen_at = {
+        (1, 11): 1.0,
+        (1, 12): 1000.0,
+        (2, 21): 1000.0,
+    }
+
+    cog._prune_autocomplete_request_state(now=1000.0 + 899.0)
+
+    assert (1, 11) not in cog._autocomplete_request_seq
+    assert (1, 11) not in cog._autocomplete_request_seen_at
+    assert (1, 12) in cog._autocomplete_request_seq
+    assert (2, 21) in cog._autocomplete_request_seq
