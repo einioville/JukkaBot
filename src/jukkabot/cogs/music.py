@@ -39,7 +39,7 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "rock": ("Rock", "bass=g=5:f=120:w=0.7,treble=g=4:f=5000:w=0.7"),
     "trebleboost": ("Treble Boost", "treble=g=6:f=5000:w=0.8"),
 }
-SHOW_SHUFFLE_BUTTON = False
+SHOW_SHUFFLE_BUTTON = True
 PAUSE_EMOJI = "⏸️"
 RESUME_EMOJI = "▶️"
 
@@ -49,8 +49,14 @@ class NowPlayingControls(discord.ui.View):
         super().__init__(timeout=3600)
         self.cog = cog
         self.guild_id = guild_id
-        if not SHOW_SHUFFLE_BUTTON:
-            self.remove_item(self.shuffle_button)
+        self.clear_items()
+        if SHOW_SHUFFLE_BUTTON:
+            self.add_item(self.shuffle_button)
+        self.add_item(self.previous_button)
+        self.add_item(self.pause_button)
+        self.add_item(self.next_button)
+        self.add_item(self.stop_button)
+        self.add_item(self.repeat_button)
         self._sync_repeat_button_style()
         self._sync_pause_button_style()
 
@@ -155,7 +161,7 @@ class NowPlayingControls(discord.ui.View):
         )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=0)
     async def shuffle_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -185,7 +191,7 @@ class NowPlayingControls(discord.ui.View):
             )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=1)
     async def repeat_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
