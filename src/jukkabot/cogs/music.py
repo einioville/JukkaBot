@@ -83,6 +83,15 @@ class NowPlayingControls(discord.ui.View):
         if guild is None:
             return
 
+        logger.info(
+            "%s pressed previous in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         if await self.cog._play_previous(guild):
             self.cog._touch_activity(guild.id)
             return
@@ -94,6 +103,15 @@ class NowPlayingControls(discord.ui.View):
         if guild is None:
             return
 
+        logger.info(
+            "%s pressed next/skip in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         if await self.cog._skip_track(guild):
             self.cog._touch_activity(guild.id)
             return
@@ -105,6 +123,15 @@ class NowPlayingControls(discord.ui.View):
         if guild is None:
             return
 
+        logger.info(
+            "%s pressed pause/resume in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         await self.cog._toggle_pause(guild)
         await self.cog._refresh_now_playing(
             guild, interaction.channel_id, edit_existing=True
@@ -124,6 +151,15 @@ class NowPlayingControls(discord.ui.View):
         if not state.queue:
             return
 
+        logger.info(
+            "%s pressed shuffle in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         self.cog.queue_manager.shuffle(guild.id)
         current_channel = self.cog._resolve_announce_channel(guild, interaction.channel_id)
         if state.current_track is not None:
@@ -143,6 +179,16 @@ class NowPlayingControls(discord.ui.View):
 
         state = self.cog.queue_manager.get(guild.id)
         state.repeat_current = not state.repeat_current
+        logger.info(
+            "%s set repeat=%s in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            state.repeat_current,
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         self._sync_repeat_button_style()
         await self.cog._refresh_now_playing(
             guild, interaction.channel_id, edit_existing=True
@@ -155,6 +201,15 @@ class NowPlayingControls(discord.ui.View):
         guild = await self._validate(interaction)
         if guild is None:
             return
+        logger.info(
+            "%s pressed stop in channel '%s' at guild '%s'.",
+            self.cog._user_name(interaction.user),
+            self.cog._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self.cog._guild_name(guild),
+        )
         await self.cog._leave_voice(guild, interaction.channel_id)
 
 
@@ -185,6 +240,42 @@ class MusicCog(commands.Cog):
 
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
+
+    @staticmethod
+    def _guild_name(guild: object | None) -> str:
+        if guild is None:
+            return "Unknown guild"
+        name = getattr(guild, "name", None)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return "Unknown guild"
+
+    @staticmethod
+    def _channel_name(channel: object | None, *, fallback: str = "Unknown channel") -> str:
+        if channel is None:
+            return fallback
+        name = getattr(channel, "name", None)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return fallback
+
+    @staticmethod
+    def _user_name(user: object | None) -> str:
+        if user is None:
+            return "Unknown user"
+        display_name = getattr(user, "display_name", None)
+        if isinstance(display_name, str) and display_name.strip():
+            return display_name.strip()
+        username = getattr(user, "name", None)
+        if isinstance(username, str) and username.strip():
+            return username.strip()
+        return "Unknown user"
+
+    @staticmethod
+    def _track_name(track: Track | None) -> str:
+        if track is None or not track.title.strip():
+            return "Unknown track"
+        return track.title
 
     async def _ack_silent(self, interaction: discord.Interaction) -> None:
         if not interaction.response.is_done():
@@ -261,6 +352,13 @@ class MusicCog(commands.Cog):
             self._pending_seek_seconds[guild.id] = elapsed
         else:
             self._pending_seek_seconds.pop(guild.id, None)
+        logger.info(
+            "Applying filter '%s' by restarting '%s' in channel '%s' at guild '%s'.",
+            state.active_filter_preset,
+            self._track_name(state.current_track),
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         state.queue.appendleft(state.current_track)
         state.skip_requested = True
         if voice.is_playing() or voice.is_paused():
@@ -271,10 +369,20 @@ class MusicCog(commands.Cog):
         state.skip_requested = False
         await self._play_next(guild)
 
-    def _clear_guild_voice_state(self, guild_id: int) -> None:
+    def _clear_guild_voice_state(self, guild: discord.Guild) -> None:
+        guild_id = guild.id
+        state = self.queue_manager.get(guild_id)
+        queued_count = len(state.queue)
+        history_count = len(state.history)
         self.queue_manager.clear(guild_id)
         self.last_active_by_guild.pop(guild_id, None)
         self._clear_playback_clock(guild_id)
+        logger.info(
+            "Cleared media state in guild '%s' (queue items: %s, history items: %s).",
+            self._guild_name(guild),
+            queued_count,
+            history_count,
+        )
 
     async def _delete_now_playing_message(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
@@ -309,8 +417,12 @@ class MusicCog(commands.Cog):
     async def _cleanup_after_disconnect(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
     ) -> None:
+        logger.info(
+            "Running disconnect cleanup for guild '%s'.",
+            self._guild_name(guild),
+        )
         await self._delete_now_playing_message(guild, fallback_channel_id)
-        self._clear_guild_voice_state(guild.id)
+        self._clear_guild_voice_state(guild)
 
     async def _leave_voice(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
@@ -318,6 +430,11 @@ class MusicCog(commands.Cog):
         voice = guild.voice_client
         if voice is None:
             return False
+        logger.info(
+            "Leaving channel '%s' at guild '%s'.",
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         await voice.disconnect(force=True)
         await self._cleanup_after_disconnect(guild, fallback_channel_id)
         return True
@@ -382,6 +499,13 @@ class MusicCog(commands.Cog):
         if user_channel is not None and bot_voice.channel.id == user_channel.id:
             return True, user_channel
 
+        logger.info(
+            "Denied voice command from %s in guild '%s': bot in '%s', user in '%s'.",
+            self._user_name(interaction.user),
+            self._guild_name(guild),
+            self._channel_name(bot_voice.channel, fallback="Unknown voice channel"),
+            self._channel_name(user_channel, fallback="No voice channel"),
+        )
         await interaction.response.send_message(
             "Join the same voice channel as the bot to use this command.",
             ephemeral=True,
@@ -486,6 +610,12 @@ class MusicCog(commands.Cog):
         if voice is None or state.current_track is None:
             return False
 
+        logger.info(
+            "Skipping '%s' in channel '%s' at guild '%s'.",
+            self._track_name(state.current_track),
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         state.skip_requested = True
         if voice.is_playing() or voice.is_paused():
             voice.stop()
@@ -506,6 +636,12 @@ class MusicCog(commands.Cog):
 
         # Spotify-like behavior: restart current track if we've progressed enough.
         if state.current_track is not None and self._current_elapsed_seconds(guild.id) > 5.0:
+            logger.info(
+                "Restarting current track '%s' in channel '%s' at guild '%s'.",
+                self._track_name(state.current_track),
+                self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+                self._guild_name(guild),
+            )
             state.queue.appendleft(state.current_track)
             state.skip_requested = True
             self._pending_seek_seconds.pop(guild.id, None)
@@ -520,6 +656,13 @@ class MusicCog(commands.Cog):
         if not state.history:
             return False
 
+        previous_title = self._track_name(state.history[-1])
+        logger.info(
+            "Moving to previous track '%s' in channel '%s' at guild '%s'.",
+            previous_title,
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         previous = state.history.pop()
         if state.current_track is not None:
             state.queue.appendleft(state.current_track)
@@ -539,10 +682,20 @@ class MusicCog(commands.Cog):
         if voice.is_playing():
             voice.pause()
             self._mark_paused(guild.id)
+            logger.info(
+                "Paused playback in channel '%s' at guild '%s'.",
+                self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+                self._guild_name(guild),
+            )
             return "Paused."
         if voice.is_paused():
             voice.resume()
             self._mark_resumed(guild.id)
+            logger.info(
+                "Resumed playback in channel '%s' at guild '%s'.",
+                self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+                self._guild_name(guild),
+            )
             return "Resumed."
         return "Nothing is currently playing."
 
@@ -581,11 +734,24 @@ class MusicCog(commands.Cog):
             try:
                 future.result()
             except Exception:
-                logger.exception("Failed to process playback callback for guild %s", guild.id)
+                logger.exception(
+                    "Failed to process playback callback in channel '%s' at guild '%s'.",
+                    self._channel_name(
+                        getattr(guild.voice_client, "channel", None),
+                        fallback="Unknown voice channel",
+                    ),
+                    self._guild_name(guild),
+                )
 
         voice.play(source, after=after_playback)
         self._set_playback_clock(guild.id, initial_elapsed_seconds=seek_seconds)
         self._touch_activity(guild.id)
+        logger.info(
+            "Started playback of '%s' in channel '%s' at guild '%s'.",
+            self._track_name(track),
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         await self._send_now_playing(guild, announce_channel, track)
 
     async def _after_track_finished(
@@ -594,10 +760,21 @@ class MusicCog(commands.Cog):
         guild = self.bot.get_guild(guild_id)
         if guild is None:
             return
-        if error:
-            logger.error("Playback error in guild %s: %s", guild_id, error)
-
         state = self.queue_manager.get(guild_id)
+        finished_track = state.current_track
+        channel_name = self._channel_name(
+            getattr(guild.voice_client, "channel", None), fallback="Unknown voice channel"
+        )
+        guild_name = self._guild_name(guild)
+        if error:
+            logger.error(
+                "Playback error for '%s' in channel '%s' at guild '%s': %s",
+                self._track_name(finished_track),
+                channel_name,
+                guild_name,
+                error,
+            )
+
         should_repeat = (
             state.repeat_current
             and not state.skip_requested
@@ -605,6 +782,7 @@ class MusicCog(commands.Cog):
         )
         if should_repeat and state.current_track is not None:
             state.queue.appendleft(state.current_track)
+        was_skip = state.skip_requested
         self.queue_manager.finish_current(
             guild_id, add_to_history=not state.skip_requested and not should_repeat
         )
@@ -612,6 +790,22 @@ class MusicCog(commands.Cog):
         self._playback_started_at.pop(guild_id, None)
         self._paused_started_at.pop(guild_id, None)
         self._paused_accumulated_seconds.pop(guild_id, None)
+        if finished_track is not None:
+            if should_repeat:
+                reason = "repeat"
+            elif error:
+                reason = "error"
+            elif was_skip:
+                reason = "skip"
+            else:
+                reason = "finished"
+            logger.info(
+                "Playback ended (%s) for '%s' in channel '%s' at guild '%s'.",
+                reason,
+                self._track_name(finished_track),
+                channel_name,
+                guild_name,
+            )
 
         await self._play_next(guild)
 
@@ -622,6 +816,10 @@ class MusicCog(commands.Cog):
         if voice is None:
             return
         if not voice.is_connected():
+            logger.info(
+                "Voice client was disconnected in guild '%s'; cleaning media state.",
+                self._guild_name(guild),
+            )
             await self._cleanup_after_disconnect(guild, fallback_channel_id)
             return
         if voice.is_playing() or voice.is_paused():
@@ -630,6 +828,10 @@ class MusicCog(commands.Cog):
         channel = self._resolve_announce_channel(guild, fallback_channel_id)
         while True:
             if not voice.is_connected():
+                logger.info(
+                    "Voice client disconnected during playback loop in guild '%s'.",
+                    self._guild_name(guild),
+                )
                 await self._cleanup_after_disconnect(guild, fallback_channel_id)
                 return
 
@@ -637,13 +839,27 @@ class MusicCog(commands.Cog):
             if track is None:
                 await self._delete_now_playing_message(guild, fallback_channel_id)
                 self._touch_activity(guild.id)
+                logger.info(
+                    "Playback ended at channel '%s' at server '%s' (queue is empty).",
+                    self._channel_name(
+                        getattr(voice, "channel", None), fallback="Unknown voice channel"
+                    ),
+                    self._guild_name(guild),
+                )
                 return
 
             try:
                 await self._play_track(guild, voice, track, channel)
                 return
             except Exception as exc:
-                logger.exception("Failed to start track in guild %s", guild.id)
+                logger.exception(
+                    "Failed to start '%s' in channel '%s' at guild '%s'.",
+                    self._track_name(track),
+                    self._channel_name(
+                        getattr(voice, "channel", None), fallback="Unknown voice channel"
+                    ),
+                    self._guild_name(guild),
+                )
                 self.queue_manager.finish_current(guild.id, add_to_history=False)
                 if channel is not None:
                     await channel.send(f"Failed to play **{track.title}**: {exc}")
@@ -678,6 +894,11 @@ class MusicCog(commands.Cog):
                 continue
             last_active = self.last_active_by_guild.get(guild.id, now)
             if now - last_active >= timedelta(minutes=5):
+                logger.info(
+                    "Disconnected from channel '%s' at guild '%s' after idle timeout.",
+                    self._channel_name(voice.channel, fallback="Unknown voice channel"),
+                    self._guild_name(guild),
+                )
                 await voice.disconnect(force=True)
                 await self._cleanup_after_disconnect(guild)
 
@@ -695,6 +916,11 @@ class MusicCog(commands.Cog):
         if member.guild is None:
             return
         if before.channel is not None and after.channel is None:
+            logger.info(
+                "Bot disconnected from channel '%s' at guild '%s'. Clearing media state.",
+                self._channel_name(before.channel, fallback="Unknown voice channel"),
+                self._guild_name(member.guild),
+            )
             await self._cleanup_after_disconnect(member.guild)
 
     @idle_disconnect.before_loop
@@ -709,6 +935,7 @@ class MusicCog(commands.Cog):
                 "This command can only be used in a server.", ephemeral=True
             )
             return
+        requester_name = self._user_name(interaction.user)
 
         user_channel = self._current_voice_channel(interaction)
         if user_channel is None:
@@ -723,12 +950,25 @@ class MusicCog(commands.Cog):
         bot_voice = guild.voice_client
         if bot_voice and bot_voice.channel.id == user_channel.id:
             await self._ack_silent(interaction)
+            logger.info(
+                "%s requested /join while bot was already in channel '%s' at guild '%s'.",
+                requester_name,
+                self._channel_name(user_channel, fallback="Unknown voice channel"),
+                self._guild_name(guild),
+            )
             await self._finalize_silent(interaction)
             return
 
         if bot_voice and bot_voice.channel.id != user_channel.id:
             humans_in_bot_channel = [m for m in bot_voice.channel.members if not m.bot]
             if humans_in_bot_channel:
+                logger.info(
+                    "%s tried moving bot to '%s' at guild '%s', but bot is active in '%s'.",
+                    requester_name,
+                    self._channel_name(user_channel, fallback="Unknown voice channel"),
+                    self._guild_name(guild),
+                    self._channel_name(bot_voice.channel, fallback="Unknown voice channel"),
+                )
                 await interaction.response.send_message(
                     "Bot is active in another channel and cannot switch yet.",
                     ephemeral=True,
@@ -738,6 +978,12 @@ class MusicCog(commands.Cog):
             await bot_voice.move_to(user_channel)
             self.queue_manager.set_voice_channel(guild.id, user_channel.id)
             self._touch_activity(guild.id)
+            logger.info(
+                "%s moved bot to channel '%s' at guild '%s'.",
+                requester_name,
+                self._channel_name(user_channel, fallback="Unknown voice channel"),
+                self._guild_name(guild),
+            )
             await self._finalize_silent(interaction)
             return
 
@@ -745,6 +991,12 @@ class MusicCog(commands.Cog):
             await self._ack_silent(interaction)
             await user_channel.connect()
         except discord.DiscordException as exc:
+            logger.warning(
+                "Failed to join channel '%s' at guild '%s': %s",
+                self._channel_name(user_channel, fallback="Unknown voice channel"),
+                self._guild_name(guild),
+                exc,
+            )
             await self._send_followup_and_finalize(
                 interaction,
                 f"Could not join voice channel: {exc}",
@@ -754,6 +1006,12 @@ class MusicCog(commands.Cog):
 
         self.queue_manager.set_voice_channel(guild.id, user_channel.id)
         self._touch_activity(guild.id)
+        logger.info(
+            "Joined channel '%s' at guild '%s' via /join by %s.",
+            self._channel_name(user_channel, fallback="Unknown voice channel"),
+            self._guild_name(guild),
+            requester_name,
+        )
         await self._finalize_silent(interaction)
 
     async def play_autocomplete(
@@ -827,6 +1085,17 @@ class MusicCog(commands.Cog):
         await self._ack_silent(interaction)
         self._set_filter_preset(guild.id, preset_key)
         self._touch_activity(guild.id)
+        preset_label = FILTER_PRESETS[preset_key][0]
+        logger.info(
+            "%s set filter to '%s' in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            preset_label,
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self._guild_name(guild),
+        )
         await self._restart_current_with_active_filter(guild)
         await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
         await self._finalize_silent(interaction)
@@ -853,6 +1122,16 @@ class MusicCog(commands.Cog):
         else:
             state.active_audio_filter = f"bass=g={int(level)}:f=110:w=0.8"
         self._touch_activity(guild.id)
+        logger.info(
+            "%s set bass level to %s in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            int(level),
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self._guild_name(guild),
+        )
         await self._restart_current_with_active_filter(guild)
         await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
         await self._finalize_silent(interaction)
@@ -890,7 +1169,19 @@ class MusicCog(commands.Cog):
             try:
                 bot_voice = await user_channel.connect()
                 self.queue_manager.set_voice_channel(guild.id, user_channel.id)
+                logger.info(
+                    "Auto-joined channel '%s' at guild '%s' for /play by %s.",
+                    self._channel_name(user_channel, fallback="Unknown voice channel"),
+                    self._guild_name(guild),
+                    self._user_name(interaction.user),
+                )
             except discord.DiscordException as exc:
+                logger.warning(
+                    "Auto-join failed for /play in channel '%s' at guild '%s': %s",
+                    self._channel_name(user_channel, fallback="Unknown voice channel"),
+                    self._guild_name(guild),
+                    exc,
+                )
                 await self._send_followup_and_finalize(
                     interaction,
                     f"Could not join voice channel: {exc}",
@@ -928,6 +1219,14 @@ class MusicCog(commands.Cog):
             requested_by_user_id=interaction.user.id,
             requested_by_display_name=requester_name,
         )
+        logger.info(
+            "%s queued '%s' in channel '%s' at guild '%s' (queue size now %s).",
+            requester_name,
+            self._track_name(track),
+            self._channel_name(user_channel, fallback="Unknown voice channel"),
+            self._guild_name(guild),
+            len(state.queue),
+        )
         self._touch_activity(guild.id)
         if state.current_track is None:
             await self._start_if_needed(guild, interaction.channel_id)
@@ -962,6 +1261,13 @@ class MusicCog(commands.Cog):
             return
 
         await self._ack_silent(interaction)
+        logger.info(
+            "%s requested /skip for '%s' in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            self._track_name(state.current_track),
+            self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
+            self._guild_name(guild),
+        )
         skipped = await self._skip_track(guild)
         self._touch_activity(guild.id)
         if not skipped:
@@ -984,6 +1290,15 @@ class MusicCog(commands.Cog):
             return
 
         await self._ack_silent(interaction)
+        logger.info(
+            "%s requested /pause in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self._guild_name(guild),
+        )
         await self._toggle_pause(guild)
         await self._refresh_now_playing(
             guild, interaction.channel_id, edit_existing=True
@@ -1009,8 +1324,15 @@ class MusicCog(commands.Cog):
             voice.stop()
 
         await self._delete_now_playing_message(guild, interaction.channel_id)
+        current_track_name = self._track_name(state.current_track)
         self.queue_manager.clear(guild.id)
         self._touch_activity(guild.id)
+        logger.info(
+            "%s cleared playback state in guild '%s' (previous track: '%s').",
+            self._user_name(interaction.user),
+            self._guild_name(guild),
+            current_track_name,
+        )
         await self._finalize_silent(interaction)
 
     @app_commands.command(name="leave", description="Disconnect the bot from voice.")
@@ -1024,6 +1346,15 @@ class MusicCog(commands.Cog):
             return
 
         await self._ack_silent(interaction)
+        logger.info(
+            "%s requested /leave in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self._guild_name(guild),
+        )
         if not await self._leave_voice(guild, interaction.channel_id):
             await self._send_followup_and_finalize(
                 interaction,
