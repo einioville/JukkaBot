@@ -50,12 +50,24 @@ class NowPlayingControls(discord.ui.View):
         if not SHOW_SHUFFLE_BUTTON:
             self.remove_item(self.shuffle_button)
         self._sync_repeat_button_style()
+        self._sync_pause_button_style()
 
     def _sync_repeat_button_style(self) -> None:
         state = self.cog.queue_manager.get(self.guild_id)
         self.repeat_button.style = (
             discord.ButtonStyle.success
             if state.repeat_current
+            else discord.ButtonStyle.secondary
+        )
+
+    def _sync_pause_button_style(self) -> None:
+        bot = getattr(self.cog, "bot", None)
+        get_guild = getattr(bot, "get_guild", None)
+        guild = get_guild(self.guild_id) if callable(get_guild) else None
+        voice = getattr(guild, "voice_client", None) if guild is not None else None
+        self.pause_button.style = (
+            discord.ButtonStyle.success
+            if voice is not None and voice.is_paused()
             else discord.ButtonStyle.secondary
         )
 
@@ -74,7 +86,7 @@ class NowPlayingControls(discord.ui.View):
 
         return guild
 
-    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=0)
     async def previous_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -96,7 +108,7 @@ class NowPlayingControls(discord.ui.View):
             self.cog._touch_activity(guild.id)
             return
 
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
     async def next_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
         guild = await self._validate(interaction)
@@ -116,7 +128,7 @@ class NowPlayingControls(discord.ui.View):
             self.cog._touch_activity(guild.id)
             return
 
-    @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.secondary, row=0)
     async def pause_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
         guild = await self._validate(interaction)
@@ -133,12 +145,13 @@ class NowPlayingControls(discord.ui.View):
             self.cog._guild_name(guild),
         )
         await self.cog._toggle_pause(guild)
+        self._sync_pause_button_style()
         await self.cog._refresh_now_playing(
             guild, interaction.channel_id, edit_existing=True
         )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
     async def shuffle_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -168,7 +181,7 @@ class NowPlayingControls(discord.ui.View):
             )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=0)
     async def repeat_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -195,7 +208,7 @@ class NowPlayingControls(discord.ui.View):
         )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.secondary, row=0)
     async def stop_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
         guild = await self._validate(interaction)
