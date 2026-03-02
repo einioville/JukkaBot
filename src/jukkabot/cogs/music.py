@@ -39,7 +39,6 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "rock": ("Rock", "bass=g=5:f=120:w=0.7,treble=g=4:f=5000:w=0.7"),
     "trebleboost": ("Treble Boost", "treble=g=6:f=5000:w=0.8"),
 }
-SHOW_SHUFFLE_BUTTON = True
 PAUSE_EMOJI = "⏸️"
 RESUME_EMOJI = "▶️"
 
@@ -50,13 +49,11 @@ class NowPlayingControls(discord.ui.View):
         self.cog = cog
         self.guild_id = guild_id
         self.clear_items()
-        if SHOW_SHUFFLE_BUTTON:
-            self.add_item(self.shuffle_button)
+        self.add_item(self.repeat_button)
         self.add_item(self.previous_button)
         self.add_item(self.pause_button)
         self.add_item(self.next_button)
         self.add_item(self.stop_button)
-        self.add_item(self.repeat_button)
         self._sync_repeat_button_style()
         self._sync_pause_button_style()
 
@@ -74,11 +71,7 @@ class NowPlayingControls(discord.ui.View):
         guild = get_guild(self.guild_id) if callable(get_guild) else None
         voice = getattr(guild, "voice_client", None) if guild is not None else None
         is_paused = voice is not None and voice.is_paused()
-        self.pause_button.style = (
-            discord.ButtonStyle.success
-            if is_paused
-            else discord.ButtonStyle.secondary
-        )
+        self.pause_button.style = discord.ButtonStyle.secondary
         self.pause_button.emoji = RESUME_EMOJI if is_paused else PAUSE_EMOJI
 
     async def _validate(self, interaction: discord.Interaction) -> discord.Guild | None:
@@ -161,7 +154,7 @@ class NowPlayingControls(discord.ui.View):
         )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
     async def shuffle_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -191,7 +184,7 @@ class NowPlayingControls(discord.ui.View):
             )
         self.cog._touch_activity(guild.id)
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=0)
     async def repeat_button(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
