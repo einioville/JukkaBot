@@ -40,6 +40,8 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "trebleboost": ("Treble Boost", "treble=g=6:f=5000:w=0.8"),
 }
 SHOW_SHUFFLE_BUTTON = False
+PAUSE_EMOJI = "⏸️"
+RESUME_EMOJI = "▶️"
 
 
 class NowPlayingControls(discord.ui.View):
@@ -65,11 +67,13 @@ class NowPlayingControls(discord.ui.View):
         get_guild = getattr(bot, "get_guild", None)
         guild = get_guild(self.guild_id) if callable(get_guild) else None
         voice = getattr(guild, "voice_client", None) if guild is not None else None
+        is_paused = voice is not None and voice.is_paused()
         self.pause_button.style = (
             discord.ButtonStyle.success
-            if voice is not None and voice.is_paused()
+            if is_paused
             else discord.ButtonStyle.secondary
         )
+        self.pause_button.emoji = RESUME_EMOJI if is_paused else PAUSE_EMOJI
 
     async def _validate(self, interaction: discord.Interaction) -> discord.Guild | None:
         guild = interaction.guild or self.cog.bot.get_guild(self.guild_id)
@@ -128,7 +132,7 @@ class NowPlayingControls(discord.ui.View):
             self.cog._touch_activity(guild.id)
             return
 
-    @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(emoji=PAUSE_EMOJI, style=discord.ButtonStyle.secondary, row=0)
     async def pause_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
         guild = await self._validate(interaction)
