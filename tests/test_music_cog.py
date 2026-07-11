@@ -384,6 +384,34 @@ def test_validate_channel_access_allows_when_voice_client_has_no_channel() -> No
     assert interaction.response.messages == []
 
 
+def test_build_queue_embed_lists_current_and_queued_tracks() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("first"))
+    state.queue.append(_track("second"))
+
+    embed = cog._build_queue_embed(state)
+
+    assert embed.fields[0].name == "Now Playing"
+    assert "current" in embed.fields[0].value
+    assert "first" in embed.description
+    assert "second" in embed.description
+    assert embed.footer.text is not None
+    assert "2 in queue" in embed.footer.text
+
+
+def test_build_queue_embed_reports_empty_queue() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+
+    embed = cog._build_queue_embed(state)
+
+    assert embed.description == "Queue is empty."
+
+
 def test_prune_autocomplete_request_state_removes_stale_entries() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog._autocomplete_request_seq = {

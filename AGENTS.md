@@ -17,6 +17,7 @@
   - Autocomplete selections resolve by exact track URL value.
 - `/skip`: skip current track.
 - `/pause`: toggle pause/resume.
+- `/queue`: show the current track and queued tracks (ephemeral, read-only).
 - `/clear`: clear queue/history/current track and delete now-playing message.
   - Clear is a hard-stop operation: pending playback callbacks must not auto-advance to the next track after `/clear`.
 - `/leave`: disconnect from voice and clear queue/history/current state.

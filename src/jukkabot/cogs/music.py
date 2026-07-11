@@ -1513,6 +1513,81 @@ class MusicCog(commands.Cog):
             return
         await self._finalize_silent(interaction)
 
+    @staticmethod
+    def _format_duration(total_seconds: int) -> str:
+        total_seconds = max(0, int(total_seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    def _build_queue_embed(self, state) -> discord.Embed:  # noqa: ANN001
+        embed = discord.Embed(title="JukkaBot - Queue", color=discord.Color(0x1DB954))
+        if state.current_track is not None:
+            current = state.current_track
+            requester = current.requested_by_display_name or "Unknown"
+            embed.add_field(
+                name="Now Playing",
+                value=(
+                    f"[{current.title}]({current.url}) "
+                    f"`{current.duration_label}` · {requester}"
+                )[:1024],
+                inline=False,
+            )
+        if not state.queue:
+            embed.description = "Queue is empty."
+            return embed
+
+        lines: list[str] = []
+        shown = 0
+        for index, track in enumerate(state.queue, start=1):
+            requester = track.requested_by_display_name or "Unknown"
+            title = track.title if len(track.title) <= 80 else f"{track.title[:77]}..."
+            line = (
+                f"`{index:>2}.` [{title}]({track.url}) "
+                f"`{track.duration_label}` · {requester}"
+            )
+            if len("\n".join([*lines, line])) > 3900:
+                break
+            lines.append(line)
+            shown += 1
+
+        remaining = len(state.queue) - shown
+        if remaining > 0:
+            lines.append(f"... and {remaining} more")
+        embed.description = "\n".join(lines)
+        total_seconds = sum(max(0, track.duration_seconds) for track in state.queue)
+        embed.set_footer(
+            text=f"{len(state.queue)} in queue · total {self._format_duration(total_seconds)}"
+        )
+        return embed
+
+    @app_commands.command(name="queue", description="Show the current queue.")
+    async def queue(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        state = self.queue_manager.get(guild.id)
+        if state.current_track is None and not state.queue:
+            await interaction.response.send_message(
+                "The queue is empty.", ephemeral=True
+            )
+            return
+
+        logger.info(
+            "%s requested /queue in guild '%s' (queue size %s).",
+            self._user_name(interaction.user),
+            self._guild_name(guild),
+            len(state.queue),
+        )
+        embed = self._build_queue_embed(state)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
     async def banuser(self, interaction: discord.Interaction, user: discord.Member) -> None:
         guild = interaction.guild
