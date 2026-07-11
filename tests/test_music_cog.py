@@ -412,6 +412,15 @@ def test_build_queue_embed_reports_empty_queue() -> None:
     assert embed.description == "Queue is empty."
 
 
+def test_is_playlist_url_detects_list_param_and_playlist_path() -> None:
+    assert (
+        MusicCog._is_playlist_url("https://www.youtube.com/watch?v=abc&list=PL123") is True
+    )
+    assert MusicCog._is_playlist_url("https://www.youtube.com/playlist?list=PL123") is True
+    assert MusicCog._is_playlist_url("https://youtu.be/abc") is False
+    assert MusicCog._is_playlist_url("just a search query") is False
+
+
 def test_prune_autocomplete_request_state_removes_stale_entries() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog._autocomplete_request_seq = {

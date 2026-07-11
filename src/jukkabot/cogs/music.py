@@ -38,6 +38,7 @@ RESUME_EMOJI = "▶️"
 AUTOCOMPLETE_STATE_TTL_SECONDS = 15 * 60
 AUTOCOMPLETE_STATE_MAX_ENTRIES = 1000
 IDLE_PRESENCE_TEXT = "Vitun Pellet"
+MAX_PLAYLIST_TRACKS = 100
 
 
 class NowPlayingControls(discord.ui.View):
@@ -258,6 +259,15 @@ class MusicCog(commands.Cog):
     def _looks_like_url(value: str) -> bool:
         candidate = value.strip().casefold()
         return candidate.startswith("http://") or candidate.startswith("https://")
+
+    @classmethod
+    def _is_playlist_url(cls, value: str) -> bool:
+        if not cls._looks_like_url(value):
+            return False
+        parsed = urlparse(value.strip())
+        if parse_qs(parsed.query).get("list"):
+            return True
+        return parsed.path.rstrip("/").casefold().endswith("/playlist")
 
     def _drop_autocomplete_state_for_guild(self, guild_id: int) -> None:
         keys = [key for key in self._autocomplete_request_seq if key[0] == guild_id]
@@ -1330,8 +1340,13 @@ class MusicCog(commands.Cog):
             return
 
         normalized_query = query.strip()
+        is_playlist = self._is_playlist_url(normalized_query)
         try:
-            if self._looks_like_url(normalized_query):
+            if is_playlist:
+                tracks = await asyncio.to_thread(
+                    self.music_service.get_playlist, normalized_query
+                )
+            elif self._looks_like_url(normalized_query):
                 track = await asyncio.to_thread(
                     self.music_service.get_track, normalized_query
                 )
@@ -1354,22 +1369,24 @@ class MusicCog(commands.Cog):
             )
             return
 
-        track = tracks[0]
         requester_name = (
             interaction.user.display_name
             if isinstance(interaction.user, discord.Member)
             else interaction.user.name
         )
-        self.queue_manager.queue_track(
-            guild.id,
-            track,
-            requested_by_user_id=interaction.user.id,
-            requested_by_display_name=requester_name,
-        )
+        selected = tracks[:MAX_PLAYLIST_TRACKS] if is_playlist else tracks[:1]
+        for track in selected:
+            self.queue_manager.queue_track(
+                guild.id,
+                track,
+                requested_by_user_id=interaction.user.id,
+                requested_by_display_name=requester_name,
+            )
         logger.info(
-            "%s queued '%s' in channel '%s' at guild '%s' (queue size now %s).",
+            "%s queued %s track(s) from '%s' in channel '%s' at guild '%s' (queue size now %s).",
             requester_name,
-            self._track_name(track),
+            len(selected),
+            self._track_name(selected[0]),
             self._channel_name(user_channel, fallback="Unknown voice channel"),
             self._guild_name(guild),
             len(state.queue),
@@ -1381,6 +1398,13 @@ class MusicCog(commands.Cog):
             await self._refresh_now_playing(
                 guild, interaction.channel_id, edit_existing=True
             )
+        if is_playlist:
+            note = f"Queued {len(selected)} track(s) from the playlist."
+            dropped = len(tracks) - len(selected)
+            if dropped > 0:
+                note += f" Skipped {dropped} over the {MAX_PLAYLIST_TRACKS}-track limit."
+            await self._send_followup_and_finalize(interaction, note, ephemeral=True)
+            return
         await self._finalize_silent(interaction)
 
     @app_commands.command(name="skip", description="Skip the current track.")

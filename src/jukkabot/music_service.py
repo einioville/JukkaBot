@@ -24,6 +24,28 @@ class MusicService:
             "noplaylist": True,
         }
 
+    @staticmethod
+    def _entry_to_track(entry: object) -> Track | None:
+        if not isinstance(entry, dict):
+            return None
+        url = entry.get("url") or entry.get("webpage_url") or entry.get("id") or ""
+        if not isinstance(url, str) or not url:
+            return None
+        if not url.startswith("http"):
+            url = f"https://www.youtube.com/watch?v={url}"
+        raw_duration = entry.get("duration") or 0
+        try:
+            duration_seconds = int(raw_duration)
+        except (TypeError, ValueError):
+            duration_seconds = 0
+        return Track(
+            title=entry.get("title") or "Unknown title",
+            url=url,
+            author=entry.get("uploader") or entry.get("channel") or "Unknown author",
+            duration_seconds=duration_seconds,
+            thumbnail_url=entry.get("thumbnail"),
+        )
+
     def search(self, query: str) -> list[Track]:
         if not query.strip():
             return []
@@ -34,21 +56,38 @@ class MusicService:
         entries = info.get("entries", []) if info else []
         results: list[Track] = []
         for entry in entries:
-            url = entry.get("url") or ""
-            if not url:
-                continue
-            if not url.startswith("http"):
-                url = f"https://www.youtube.com/watch?v={url}"
-            results.append(
-                Track(
-                    title=entry.get("title") or "Unknown title",
-                    url=url,
-                    author=entry.get("uploader") or "Unknown author",
-                    duration_seconds=int(entry.get("duration") or 0),
-                    thumbnail_url=entry.get("thumbnail"),
-                )
-            )
+            track = self._entry_to_track(entry)
+            if track is not None:
+                results.append(track)
         return results
+
+    def get_playlist(self, url: str) -> list[Track]:
+        if not url.strip():
+            return []
+
+        playlist_options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "noplaylist": False,
+        }
+        with YoutubeDL(playlist_options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not isinstance(info, dict):
+            return []
+
+        entries = info.get("entries")
+        if not isinstance(entries, list):
+            single = self._entry_to_track(info)
+            return [single] if single is not None else []
+
+        tracks: list[Track] = []
+        for entry in entries:
+            track = self._entry_to_track(entry)
+            if track is not None:
+                tracks.append(track)
+        return tracks
 
     def get_track(self, video_url: str) -> Track:
         if not video_url.strip():

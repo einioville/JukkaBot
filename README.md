@@ -7,7 +7,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 ## Features
 - Slash commands:
   - `/join`: join your voice channel
-  - `/play`: search and queue a track
+  - `/play`: search and queue a track, or queue a whole playlist from a playlist URL
   - `/skip`: skip current track
   - `/pause`: pause/resume playback
   - `/queue`: show the current track and everything queued (ephemeral)

@@ -15,6 +15,7 @@
   - Autocomplete uses trailing debounce (500ms after user stops typing).
   - No autocomplete result caching.
   - Autocomplete selections resolve by exact track URL value.
+  - A playlist URL (any URL with a `list=` query param or a `/playlist` path) queues all entries, capped at 100 tracks.
 - `/skip`: skip current track.
 - `/pause`: toggle pause/resume.
 - `/queue`: show the current track and queued tracks (ephemeral, read-only).
