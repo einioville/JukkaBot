@@ -247,6 +247,72 @@ def test_after_track_finished_requeues_current_when_repeat_is_enabled() -> None:
     assert played_next == [1]
 
 
+def test_after_track_finished_appends_current_to_queue_end_when_loop_queue_enabled() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_queue = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    played_next: list[int] = []
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del fallback_channel_id
+        played_next.append(target_guild.id)
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert state.current_track is None
+    assert [track.title for track in state.queue] == ["next", "current"]
+    assert list(state.history) == []
+    assert played_next == [1]
+
+
+def test_after_track_finished_drops_current_on_skip_even_with_loop_queue() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_queue = True
+    state.skip_requested = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del target_guild, fallback_channel_id
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert [track.title for track in state.queue] == ["next"]
+    assert list(state.history) == []
+
+
 def test_play_next_deletes_now_playing_message_when_queue_runs_empty() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog.queue_manager = QueueManager()

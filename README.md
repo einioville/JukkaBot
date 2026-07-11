@@ -11,6 +11,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/skip`: skip current track
   - `/pause`: pause/resume playback
   - `/queue`: show the current track and everything queued (ephemeral)
+  - `/loop`: set loop mode (`off`, `track`, `queue`)
   - `/filter`: apply audio filter preset (autocomplete)
   - `/bass`: apply bass boost filter with level control (`0..20`)
   - `/clear`: clear queue and delete now-playing message
@@ -27,10 +28,11 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - video image
   - coming-next list (when queue is non-empty)
 - Now-playing controls on message:
-  - repeat, previous, pause/resume, next, stop
+  - repeat/loop, previous, pause/resume, next, stop
   - pause/resume button swaps emoji by state (`⏸️` while playing, `▶️` while paused)
   - shuffle logic exists in code but is not shown in now-playing controls
-  - repeat loops the currently playing track until toggled off
+  - the loop button cycles three states: off (grey `🔁`), track (green `🔂`, loops the current track), queue (blurple `🔁`, loops the whole queue)
+  - `/loop` sets the same three modes directly; queue-loop re-queues each track after it finishes naturally (skipped/errored tracks are not re-queued)
   - previous restarts current track when playback has passed 5 seconds; otherwise it goes to the previous track
   - if music commands are used from another channel, now-playing moves to that channel and old message is deleted
 - Control interactions edit the existing now-playing message (no extra feedback messages).

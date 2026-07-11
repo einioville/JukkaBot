@@ -35,6 +35,8 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
 }
 PAUSE_EMOJI = "⏸️"
 RESUME_EMOJI = "▶️"
+REPEAT_QUEUE_EMOJI = "🔁"
+REPEAT_TRACK_EMOJI = "🔂"
 AUTOCOMPLETE_STATE_TTL_SECONDS = 15 * 60
 AUTOCOMPLETE_STATE_MAX_ENTRIES = 1000
 IDLE_PRESENCE_TEXT = "Vitun Pellet"
@@ -57,11 +59,17 @@ class NowPlayingControls(discord.ui.View):
 
     def _sync_repeat_button_style(self) -> None:
         state = self.cog.queue_manager.get(self.guild_id)
-        self.repeat_button.style = (
-            discord.ButtonStyle.success
-            if state.repeat_current
-            else discord.ButtonStyle.secondary
-        )
+        if state.repeat_current:
+            # Loop the single current track: Spotify-green.
+            self.repeat_button.style = discord.ButtonStyle.success
+            self.repeat_button.emoji = REPEAT_TRACK_EMOJI
+        elif state.repeat_queue:
+            # Loop the whole queue: blurple (closest button style to purple).
+            self.repeat_button.style = discord.ButtonStyle.primary
+            self.repeat_button.emoji = REPEAT_QUEUE_EMOJI
+        else:
+            self.repeat_button.style = discord.ButtonStyle.secondary
+            self.repeat_button.emoji = REPEAT_QUEUE_EMOJI
 
     def _sync_pause_button_style(self) -> None:
         bot = getattr(self.cog, "bot", None)
@@ -192,11 +200,21 @@ class NowPlayingControls(discord.ui.View):
             return
 
         state = self.cog.queue_manager.get(guild.id)
-        state.repeat_current = not state.repeat_current
+        # Cycle through three loop states: off -> track -> queue -> off.
+        if not state.repeat_current and not state.repeat_queue:
+            state.repeat_current = True
+            mode = "track"
+        elif state.repeat_current:
+            state.repeat_current = False
+            state.repeat_queue = True
+            mode = "queue"
+        else:
+            state.repeat_queue = False
+            mode = "off"
         logger.info(
-            "%s set repeat=%s in channel '%s' at guild '%s'.",
+            "%s set loop=%s in channel '%s' at guild '%s'.",
             self.cog._user_name(interaction.user),
-            state.repeat_current,
+            mode,
             self.cog._channel_name(
                 getattr(guild.voice_client, "channel", None),
                 fallback="Unknown voice channel",
@@ -885,11 +903,26 @@ class MusicCog(commands.Cog):
             and not state.skip_requested
             and state.current_track is not None
         )
+        # Loop-queue: on a natural finish, send the track to the back of the
+        # queue so the whole set keeps cycling. Skips and errors are excluded so
+        # skipped tracks drop out and failing tracks don't loop forever.
+        should_loop_queue = (
+            state.repeat_queue
+            and not state.repeat_current
+            and not state.skip_requested
+            and error is None
+            and state.current_track is not None
+        )
         if should_repeat and state.current_track is not None:
             state.queue.appendleft(state.current_track)
+        elif should_loop_queue and state.current_track is not None:
+            state.queue.append(state.current_track)
         was_skip = state.skip_requested
         self.queue_manager.finish_current(
-            guild_id, add_to_history=not state.skip_requested and not should_repeat
+            guild_id,
+            add_to_history=(
+                not state.skip_requested and not should_repeat and not should_loop_queue
+            ),
         )
         state.skip_requested = False
         self._playback_started_at.pop(guild_id, None)
@@ -898,6 +931,8 @@ class MusicCog(commands.Cog):
         if finished_track is not None:
             if should_repeat:
                 reason = "repeat"
+            elif should_loop_queue:
+                reason = "loop-queue"
             elif error:
                 reason = "error"
             elif was_skip:
@@ -1611,6 +1646,45 @@ class MusicCog(commands.Cog):
         )
         embed = self._build_queue_embed(state)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="loop", description="Set loop mode: off, track, or queue."
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="off", value="off"),
+            app_commands.Choice(name="track", value="track"),
+            app_commands.Choice(name="queue", value="queue"),
+        ]
+    )
+    async def loop(
+        self, interaction: discord.Interaction, mode: app_commands.Choice[str]
+    ) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        state.repeat_current = mode.value == "track"
+        state.repeat_queue = mode.value == "queue"
+        await self._ack_silent(interaction)
+        self._touch_activity(guild.id)
+        logger.info(
+            "%s set loop=%s in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            mode.value,
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
+            ),
+            self._guild_name(guild),
+        )
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._finalize_silent(interaction)
 
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
     async def banuser(self, interaction: discord.Interaction, user: discord.Member) -> None:

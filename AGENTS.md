@@ -19,6 +19,7 @@
 - `/skip`: skip current track.
 - `/pause`: toggle pause/resume.
 - `/queue`: show the current track and queued tracks (ephemeral, read-only).
+- `/loop`: set loop mode (`off`, `track`, `queue`).
 - `/clear`: clear queue/history/current track and delete now-playing message.
   - Clear is a hard-stop operation: pending playback callbacks must not auto-advance to the next track after `/clear`.
 - `/leave`: disconnect from voice and clear queue/history/current state.
@@ -43,9 +44,11 @@
   - Repeat, previous, pause/resume, next, stop
   - Pause/resume button icon is state-based (`⏸️` while playing, `▶️` while paused).
   - Shuffle logic exists but its now-playing button is hidden.
-  - Repeat behavior:
-    - If repeat is enabled, current track loops until repeat is disabled.
-    - Repeat button active color should match now-playing green (Spotify green).
+  - Loop button cycles three states: off -> track -> queue -> off.
+    - Off: grey, `🔁`.
+    - Track: green (Spotify green), `🔂`; current track loops until changed.
+    - Queue: blurple/`primary` (closest button style to purple), `🔁`; each track re-queues to the back after it finishes naturally (skips/errors are not re-queued).
+    - `/loop mode:<off|track|queue>` sets the same modes; `repeat_current` and `repeat_queue` are mutually exclusive.
   - Previous behavior:
     - If current track elapsed time > 5s, restart current track from beginning.
     - Otherwise move to previous track and put current track back at the front of queue.
