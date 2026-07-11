@@ -1232,6 +1232,25 @@ class MusicCog(commands.Cog):
                 break
         return choices
 
+    async def remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        guild = interaction.guild
+        if guild is None:
+            return []
+        state = self.queue_manager.get(guild.id)
+        query = current.strip().casefold()
+        choices: list[app_commands.Choice[str]] = []
+        for index, track in enumerate(state.queue, start=1):
+            haystack = f"{track.title} {track.author}".casefold()
+            if query and query not in haystack and query != str(index):
+                continue
+            label = f"{index}. {track.title} - {track.author}"[:100]
+            choices.append(app_commands.Choice(name=label, value=str(index)))
+            if len(choices) >= 25:
+                break
+        return choices
+
     @app_commands.command(name="filter", description="Apply an audio filter preset.")
     @app_commands.autocomplete(preset=filter_autocomplete)
     async def filter(self, interaction: discord.Interaction, preset: str) -> None:
@@ -1685,6 +1704,55 @@ class MusicCog(commands.Cog):
         )
         await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
         await self._finalize_silent(interaction)
+
+    @app_commands.command(name="remove", description="Remove a track from the queue.")
+    @app_commands.autocomplete(track=remove_autocomplete)
+    async def remove(self, interaction: discord.Interaction, track: str) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        if interaction.user.id in state.banned_user_ids:
+            await interaction.response.send_message(
+                "You are banned from managing the queue in this server.", ephemeral=True
+            )
+            return
+
+        try:
+            position = int(track.strip())
+        except (TypeError, ValueError):
+            await interaction.response.send_message(
+                "Pick a track from the queue list.", ephemeral=True
+            )
+            return
+
+        removed = self.queue_manager.remove_at(guild.id, position - 1)
+        if removed is None:
+            await interaction.response.send_message(
+                "That position is no longer in the queue.", ephemeral=True
+            )
+            return
+
+        await self._ack_silent(interaction)
+        self._touch_activity(guild.id)
+        logger.info(
+            "%s removed '%s' (position %s) from the queue in guild '%s'.",
+            self._user_name(interaction.user),
+            self._track_name(removed),
+            position,
+            self._guild_name(guild),
+        )
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._send_followup_and_finalize(
+            interaction,
+            f"Removed **{removed.title}** from the queue.",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
     async def banuser(self, interaction: discord.Interaction, user: discord.Member) -> None:

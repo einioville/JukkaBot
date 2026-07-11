@@ -20,6 +20,9 @@
 - `/pause`: toggle pause/resume.
 - `/queue`: show the current track and queued tracks (ephemeral, read-only).
 - `/loop`: set loop mode (`off`, `track`, `queue`).
+- `/remove`: remove one track from the queue.
+  - Autocomplete lists queued tracks by position; the selected value is the 1-based position.
+  - Blocked for queue-banned users.
 - `/clear`: clear queue/history/current track and delete now-playing message.
   - Clear is a hard-stop operation: pending playback callbacks must not auto-advance to the next track after `/clear`.
 - `/leave`: disconnect from voice and clear queue/history/current state.

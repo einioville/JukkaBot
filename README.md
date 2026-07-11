@@ -14,6 +14,7 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
   - `/loop`: set loop mode (`off`, `track`, `queue`)
   - `/filter`: apply audio filter preset (autocomplete)
   - `/bass`: apply bass boost filter with level control (`0..20`)
+  - `/remove`: remove a track from the queue (autocomplete lists queued tracks)
   - `/clear`: clear queue and delete now-playing message
   - `/leave`: disconnect and clear queue
   - `/banuser`: ban user from queueing/skipping

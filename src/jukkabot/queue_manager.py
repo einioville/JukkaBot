@@ -56,6 +56,14 @@ class QueueManager:
         track.requested_by_display_name = requested_by_display_name
         self.add_track(guild_id, track)
 
+    def remove_at(self, guild_id: int, index: int) -> Track | None:
+        guild_queue = self.get(guild_id)
+        if index < 0 or index >= len(guild_queue.queue):
+            return None
+        removed = guild_queue.queue[index]
+        del guild_queue.queue[index]
+        return removed
+
     def pop_next(self, guild_id: int) -> Track | None:
         guild_queue = self.get(guild_id)
         if not guild_queue.queue:
