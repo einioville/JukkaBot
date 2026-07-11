@@ -13,14 +13,8 @@ from discord.ext import commands, tasks
 from jukkabot.models import Track
 from jukkabot.music_service import MusicService
 from jukkabot.queue_manager import QueueManager
-from jukkabot.tracker_service import (
-    TRACKER_GAME_NAMES,
-    TrackerApiError,
-    TrackerService,
-)
 
 logger = logging.getLogger(__name__)
-TRACKER_STATS_ENABLED = False
 
 FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "off": ("Off", None),
@@ -41,9 +35,12 @@ FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
 }
 PAUSE_EMOJI = "⏸️"
 RESUME_EMOJI = "▶️"
+REPEAT_QUEUE_EMOJI = "🔁"
+REPEAT_TRACK_EMOJI = "🔂"
 AUTOCOMPLETE_STATE_TTL_SECONDS = 15 * 60
 AUTOCOMPLETE_STATE_MAX_ENTRIES = 1000
 IDLE_PRESENCE_TEXT = "Vitun Pellet"
+MAX_PLAYLIST_TRACKS = 100
 
 
 class NowPlayingControls(discord.ui.View):
@@ -62,11 +59,17 @@ class NowPlayingControls(discord.ui.View):
 
     def _sync_repeat_button_style(self) -> None:
         state = self.cog.queue_manager.get(self.guild_id)
-        self.repeat_button.style = (
-            discord.ButtonStyle.success
-            if state.repeat_current
-            else discord.ButtonStyle.secondary
-        )
+        if state.repeat_current:
+            # Loop the single current track: Spotify-green.
+            self.repeat_button.style = discord.ButtonStyle.success
+            self.repeat_button.emoji = REPEAT_TRACK_EMOJI
+        elif state.repeat_queue:
+            # Loop the whole queue: blurple (closest button style to purple).
+            self.repeat_button.style = discord.ButtonStyle.primary
+            self.repeat_button.emoji = REPEAT_QUEUE_EMOJI
+        else:
+            self.repeat_button.style = discord.ButtonStyle.secondary
+            self.repeat_button.emoji = REPEAT_QUEUE_EMOJI
 
     def _sync_pause_button_style(self) -> None:
         bot = getattr(self.cog, "bot", None)
@@ -197,11 +200,21 @@ class NowPlayingControls(discord.ui.View):
             return
 
         state = self.cog.queue_manager.get(guild.id)
-        state.repeat_current = not state.repeat_current
+        # Cycle through three loop states: off -> track -> queue -> off.
+        if not state.repeat_current and not state.repeat_queue:
+            state.repeat_current = True
+            mode = "track"
+        elif state.repeat_current:
+            state.repeat_current = False
+            state.repeat_queue = True
+            mode = "queue"
+        else:
+            state.repeat_queue = False
+            mode = "off"
         logger.info(
-            "%s set repeat=%s in channel '%s' at guild '%s'.",
+            "%s set loop=%s in channel '%s' at guild '%s'.",
             self.cog._user_name(interaction.user),
-            state.repeat_current,
+            mode,
             self.cog._channel_name(
                 getattr(guild.voice_client, "channel", None),
                 fallback="Unknown voice channel",
@@ -238,13 +251,11 @@ class MusicCog(commands.Cog):
         bot: commands.Bot,
         queue_manager: QueueManager,
         music_service: MusicService,
-        tracker_service: TrackerService | None,
         admin_user_ids: set[int],
     ) -> None:
         self.bot = bot
         self.queue_manager = queue_manager
         self.music_service = music_service
-        self.tracker_service = tracker_service
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
         self._autocomplete_request_seq: dict[tuple[int, int], int] = {}
@@ -266,6 +277,15 @@ class MusicCog(commands.Cog):
     def _looks_like_url(value: str) -> bool:
         candidate = value.strip().casefold()
         return candidate.startswith("http://") or candidate.startswith("https://")
+
+    @classmethod
+    def _is_playlist_url(cls, value: str) -> bool:
+        if not cls._looks_like_url(value):
+            return False
+        parsed = urlparse(value.strip())
+        if parse_qs(parsed.query).get("list"):
+            return True
+        return parsed.path.rstrip("/").casefold().endswith("/playlist")
 
     def _drop_autocomplete_state_for_guild(self, guild_id: int) -> None:
         keys = [key for key in self._autocomplete_request_seq if key[0] == guild_id]
@@ -428,6 +448,29 @@ class MusicCog(commands.Cog):
             paused_total += time.monotonic() - paused_started
         return max(0.0, time.monotonic() - started_at - paused_total)
 
+    async def _restart_current_stream(
+        self, guild: discord.Guild, seek_seconds: float
+    ) -> bool:
+        state = self.queue_manager.get(guild.id)
+        voice = guild.voice_client
+        if state.current_track is None or voice is None:
+            return False
+
+        if seek_seconds > 0.0:
+            self._pending_seek_seconds[guild.id] = seek_seconds
+        else:
+            self._pending_seek_seconds.pop(guild.id, None)
+        state.queue.appendleft(state.current_track)
+        state.skip_requested = True
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()
+            return True
+
+        self.queue_manager.finish_current(guild.id, add_to_history=False)
+        state.skip_requested = False
+        await self._play_next(guild)
+        return True
+
     async def _restart_current_with_active_filter(self, guild: discord.Guild) -> None:
         state = self.queue_manager.get(guild.id)
         voice = guild.voice_client
@@ -435,10 +478,6 @@ class MusicCog(commands.Cog):
             return
 
         elapsed = self._current_elapsed_seconds(guild.id)
-        if elapsed > 0.5:
-            self._pending_seek_seconds[guild.id] = elapsed
-        else:
-            self._pending_seek_seconds.pop(guild.id, None)
         logger.info(
             "Applying filter '%s' by restarting '%s' in channel '%s' at guild '%s'.",
             state.active_filter_preset,
@@ -446,15 +485,7 @@ class MusicCog(commands.Cog):
             self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
             self._guild_name(guild),
         )
-        state.queue.appendleft(state.current_track)
-        state.skip_requested = True
-        if voice.is_playing() or voice.is_paused():
-            voice.stop()
-            return
-
-        self.queue_manager.finish_current(guild.id, add_to_history=False)
-        state.skip_requested = False
-        await self._play_next(guild)
+        await self._restart_current_stream(guild, elapsed if elapsed > 0.5 else 0.0)
 
     def _clear_guild_voice_state(self, guild: discord.Guild) -> None:
         guild_id = guild.id
@@ -883,11 +914,26 @@ class MusicCog(commands.Cog):
             and not state.skip_requested
             and state.current_track is not None
         )
+        # Loop-queue: on a natural finish, send the track to the back of the
+        # queue so the whole set keeps cycling. Skips and errors are excluded so
+        # skipped tracks drop out and failing tracks don't loop forever.
+        should_loop_queue = (
+            state.repeat_queue
+            and not state.repeat_current
+            and not state.skip_requested
+            and error is None
+            and state.current_track is not None
+        )
         if should_repeat and state.current_track is not None:
             state.queue.appendleft(state.current_track)
+        elif should_loop_queue and state.current_track is not None:
+            state.queue.append(state.current_track)
         was_skip = state.skip_requested
         self.queue_manager.finish_current(
-            guild_id, add_to_history=not state.skip_requested and not should_repeat
+            guild_id,
+            add_to_history=(
+                not state.skip_requested and not should_repeat and not should_loop_queue
+            ),
         )
         state.skip_requested = False
         self._playback_started_at.pop(guild_id, None)
@@ -896,6 +942,8 @@ class MusicCog(commands.Cog):
         if finished_track is not None:
             if should_repeat:
                 reason = "repeat"
+            elif should_loop_queue:
+                reason = "loop-queue"
             elif error:
                 reason = "error"
             elif was_skip:
@@ -1195,6 +1243,25 @@ class MusicCog(commands.Cog):
                 break
         return choices
 
+    async def remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        guild = interaction.guild
+        if guild is None:
+            return []
+        state = self.queue_manager.get(guild.id)
+        query = current.strip().casefold()
+        choices: list[app_commands.Choice[str]] = []
+        for index, track in enumerate(state.queue, start=1):
+            haystack = f"{track.title} {track.author}".casefold()
+            if query and query not in haystack and query != str(index):
+                continue
+            label = f"{index}. {track.title} - {track.author}"[:100]
+            choices.append(app_commands.Choice(name=label, value=str(index)))
+            if len(choices) >= 25:
+                break
+        return choices
+
     @app_commands.command(name="filter", description="Apply an audio filter preset.")
     @app_commands.autocomplete(preset=filter_autocomplete)
     async def filter(self, interaction: discord.Interaction, preset: str) -> None:
@@ -1338,8 +1405,13 @@ class MusicCog(commands.Cog):
             return
 
         normalized_query = query.strip()
+        is_playlist = self._is_playlist_url(normalized_query)
         try:
-            if self._looks_like_url(normalized_query):
+            if is_playlist:
+                tracks = await asyncio.to_thread(
+                    self.music_service.get_playlist, normalized_query
+                )
+            elif self._looks_like_url(normalized_query):
                 track = await asyncio.to_thread(
                     self.music_service.get_track, normalized_query
                 )
@@ -1362,22 +1434,24 @@ class MusicCog(commands.Cog):
             )
             return
 
-        track = tracks[0]
         requester_name = (
             interaction.user.display_name
             if isinstance(interaction.user, discord.Member)
             else interaction.user.name
         )
-        self.queue_manager.queue_track(
-            guild.id,
-            track,
-            requested_by_user_id=interaction.user.id,
-            requested_by_display_name=requester_name,
-        )
+        selected = tracks[:MAX_PLAYLIST_TRACKS] if is_playlist else tracks[:1]
+        for track in selected:
+            self.queue_manager.queue_track(
+                guild.id,
+                track,
+                requested_by_user_id=interaction.user.id,
+                requested_by_display_name=requester_name,
+            )
         logger.info(
-            "%s queued '%s' in channel '%s' at guild '%s' (queue size now %s).",
+            "%s queued %s track(s) from '%s' in channel '%s' at guild '%s' (queue size now %s).",
             requester_name,
-            self._track_name(track),
+            len(selected),
+            self._track_name(selected[0]),
             self._channel_name(user_channel, fallback="Unknown voice channel"),
             self._guild_name(guild),
             len(state.queue),
@@ -1389,6 +1463,13 @@ class MusicCog(commands.Cog):
             await self._refresh_now_playing(
                 guild, interaction.channel_id, edit_existing=True
             )
+        if is_playlist:
+            note = f"Queued {len(selected)} track(s) from the playlist."
+            dropped = len(tracks) - len(selected)
+            if dropped > 0:
+                note += f" Skipped {dropped} over the {MAX_PLAYLIST_TRACKS}-track limit."
+            await self._send_followup_and_finalize(interaction, note, ephemeral=True)
+            return
         await self._finalize_silent(interaction)
 
     @app_commands.command(name="skip", description="Skip the current track.")
@@ -1461,6 +1542,77 @@ class MusicCog(commands.Cog):
         self._touch_activity(guild.id)
         await self._finalize_silent(interaction)
 
+    @staticmethod
+    def _parse_timestamp(value: str) -> int | None:
+        text = value.strip()
+        if not text:
+            return None
+        parts = text.split(":")
+        if len(parts) > 3:
+            return None
+        try:
+            numbers = [int(part) for part in parts]
+        except ValueError:
+            return None
+        if any(number < 0 for number in numbers):
+            return None
+        seconds = 0
+        for number in numbers:
+            seconds = seconds * 60 + number
+        return seconds
+
+    @app_commands.command(
+        name="seek",
+        description="Jump to a position in the current track (e.g. 90 or 1:30).",
+    )
+    async def seek(self, interaction: discord.Interaction, position: str) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        voice = guild.voice_client
+        if voice is None or state.current_track is None:
+            await interaction.response.send_message(
+                "Nothing is currently playing.", ephemeral=True
+            )
+            return
+
+        target = self._parse_timestamp(position)
+        if target is None:
+            await interaction.response.send_message(
+                "Use seconds or mm:ss, e.g. `90` or `1:30`.", ephemeral=True
+            )
+            return
+
+        duration = state.current_track.duration_seconds
+        if duration > 0 and target >= duration:
+            await interaction.response.send_message(
+                f"Position is past the track length ({state.current_track.duration_label}).",
+                ephemeral=True,
+            )
+            return
+
+        await self._ack_silent(interaction)
+        logger.info(
+            "%s sought to %ss in '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            target,
+            self._track_name(state.current_track),
+            self._guild_name(guild),
+        )
+        await self._restart_current_stream(guild, float(target))
+        self._touch_activity(guild.id)
+        await self._send_followup_and_finalize(
+            interaction,
+            f"Seeked to {self._format_duration(target)}.",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="clear", description="Clear queue and remove now-playing.")
     async def clear(self, interaction: discord.Interaction) -> None:
         is_allowed, _ = await self._validate_channel_access(interaction)
@@ -1521,101 +1673,168 @@ class MusicCog(commands.Cog):
             return
         await self._finalize_silent(interaction)
 
-    async def stats_game_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        del interaction
-        query = current.strip().casefold()
-        if query:
-            matches = [name for name in TRACKER_GAME_NAMES if query in name.casefold()]
-        else:
-            matches = list(TRACKER_GAME_NAMES)
-        return [app_commands.Choice(name=name, value=name) for name in matches[:25]]
+    @staticmethod
+    def _format_duration(total_seconds: int) -> str:
+        total_seconds = max(0, int(total_seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
 
-    @app_commands.command(
-        name="stats",
-        description="Fetch player stats from Tracker Network.",
-    )
-    @app_commands.autocomplete(game=stats_game_autocomplete)
-    async def stats(
-        self,
-        interaction: discord.Interaction,
-        game: str,
-        account_name: str,
-    ) -> None:
-        if not TRACKER_STATS_ENABLED:
-            await interaction.response.send_message(
-                "Stats feature is temporarily disabled until Tracker app approval.",
-                ephemeral=True,
+    def _build_queue_embed(self, state) -> discord.Embed:  # noqa: ANN001
+        embed = discord.Embed(title="JukkaBot - Queue", color=discord.Color(0x1DB954))
+        if state.current_track is not None:
+            current = state.current_track
+            requester = current.requested_by_display_name or "Unknown"
+            embed.add_field(
+                name="Now Playing",
+                value=(
+                    f"[{current.title}]({current.url}) "
+                    f"`{current.duration_label}` · {requester}"
+                )[:1024],
+                inline=False,
             )
-            return
+        if not state.queue:
+            embed.description = "Queue is empty."
+            return embed
 
-        if interaction.guild is None:
+        lines: list[str] = []
+        shown = 0
+        for index, track in enumerate(state.queue, start=1):
+            requester = track.requested_by_display_name or "Unknown"
+            title = track.title if len(track.title) <= 80 else f"{track.title[:77]}..."
+            line = (
+                f"`{index:>2}.` [{title}]({track.url}) "
+                f"`{track.duration_label}` · {requester}"
+            )
+            if len("\n".join([*lines, line])) > 3900:
+                break
+            lines.append(line)
+            shown += 1
+
+        remaining = len(state.queue) - shown
+        if remaining > 0:
+            lines.append(f"... and {remaining} more")
+        embed.description = "\n".join(lines)
+        total_seconds = sum(max(0, track.duration_seconds) for track in state.queue)
+        embed.set_footer(
+            text=f"{len(state.queue)} in queue · total {self._format_duration(total_seconds)}"
+        )
+        return embed
+
+    @app_commands.command(name="queue", description="Show the current queue.")
+    async def queue(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
             await interaction.response.send_message(
                 "This command can only be used in a server.", ephemeral=True
             )
             return
 
-        if not account_name.strip():
+        state = self.queue_manager.get(guild.id)
+        if state.current_track is None and not state.queue:
             await interaction.response.send_message(
-                "Account name is required.", ephemeral=True
+                "The queue is empty.", ephemeral=True
             )
             return
 
-        selected_game = next(
-            (
-                name
-                for name in TRACKER_GAME_NAMES
-                if name.casefold() == game.strip().casefold()
+        logger.info(
+            "%s requested /queue in guild '%s' (queue size %s).",
+            self._user_name(interaction.user),
+            self._guild_name(guild),
+            len(state.queue),
+        )
+        embed = self._build_queue_embed(state)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="loop", description="Set loop mode: off, track, or queue."
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="off", value="off"),
+            app_commands.Choice(name="track", value="track"),
+            app_commands.Choice(name="queue", value="queue"),
+        ]
+    )
+    async def loop(
+        self, interaction: discord.Interaction, mode: app_commands.Choice[str]
+    ) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        state.repeat_current = mode.value == "track"
+        state.repeat_queue = mode.value == "queue"
+        await self._ack_silent(interaction)
+        self._touch_activity(guild.id)
+        logger.info(
+            "%s set loop=%s in channel '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            mode.value,
+            self._channel_name(
+                getattr(guild.voice_client, "channel", None),
+                fallback="Unknown voice channel",
             ),
-            None,
+            self._guild_name(guild),
         )
-        if selected_game is None:
-            await interaction.response.send_message(
-                "Game must be selected from the supported Tracker list.",
-                ephemeral=True,
-            )
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._finalize_silent(interaction)
+
+    @app_commands.command(name="remove", description="Remove a track from the queue.")
+    @app_commands.autocomplete(track=remove_autocomplete)
+    async def remove(self, interaction: discord.Interaction, track: str) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
             return
-        if self.tracker_service is None:
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        if interaction.user.id in state.banned_user_ids:
             await interaction.response.send_message(
-                "Tracker API key is not configured.",
-                ephemeral=True,
+                "You are banned from managing the queue in this server.", ephemeral=True
             )
             return
 
-        await interaction.response.defer(thinking=True)
         try:
-            profile = await asyncio.to_thread(
-                self.tracker_service.fetch_profile_stats,
-                selected_game,
-                account_name,
-            )
-        except TrackerApiError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        except Exception as exc:
-            logger.exception("Tracker stats lookup failed: %s", exc)
-            await interaction.followup.send(
-                "Failed to fetch stats from Tracker API.", ephemeral=True
+            position = int(track.strip())
+        except (TypeError, ValueError):
+            await interaction.response.send_message(
+                "Pick a track from the queue list.", ephemeral=True
             )
             return
 
-        embed = discord.Embed(
-            title=f"{profile.game_name} Stats",
-            description=f"Player: **{profile.platform_user}**  \nPlatform: **{profile.platform}**",
-            color=discord.Color(0x1DB954),
-        )
-        count = 0
-        for stat_name, stat_value in profile.stats.items():
-            embed.add_field(
-                name=str(stat_name)[:256],
-                value=str(stat_value)[:1024],
-                inline=True,
+        removed = self.queue_manager.remove_at(guild.id, position - 1)
+        if removed is None:
+            await interaction.response.send_message(
+                "That position is no longer in the queue.", ephemeral=True
             )
-            count += 1
-            if count >= 25:
-                break
-        await interaction.followup.send(embed=embed)
+            return
+
+        await self._ack_silent(interaction)
+        self._touch_activity(guild.id)
+        logger.info(
+            "%s removed '%s' (position %s) from the queue in guild '%s'.",
+            self._user_name(interaction.user),
+            self._track_name(removed),
+            position,
+            self._guild_name(guild),
+        )
+        await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
+        await self._send_followup_and_finalize(
+            interaction,
+            f"Removed **{removed.title}** from the queue.",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="banuser", description="Ban a user from queue and skip.")
     async def banuser(self, interaction: discord.Interaction, user: discord.Member) -> None:
@@ -1671,8 +1890,5 @@ class MusicCog(commands.Cog):
 async def setup(bot: commands.Bot) -> None:
     queue_manager = bot.queue_manager  # type: ignore[attr-defined]
     music_service = bot.music_service  # type: ignore[attr-defined]
-    tracker_service = bot.tracker_service  # type: ignore[attr-defined]
     admin_user_ids = bot.admin_user_ids  # type: ignore[attr-defined]
-    await bot.add_cog(
-        MusicCog(bot, queue_manager, music_service, tracker_service, admin_user_ids)
-    )
+    await bot.add_cog(MusicCog(bot, queue_manager, music_service, admin_user_ids))

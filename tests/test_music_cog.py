@@ -247,6 +247,72 @@ def test_after_track_finished_requeues_current_when_repeat_is_enabled() -> None:
     assert played_next == [1]
 
 
+def test_after_track_finished_appends_current_to_queue_end_when_loop_queue_enabled() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_queue = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    played_next: list[int] = []
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del fallback_channel_id
+        played_next.append(target_guild.id)
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert state.current_track is None
+    assert [track.title for track in state.queue] == ["next", "current"]
+    assert list(state.history) == []
+    assert played_next == [1]
+
+
+def test_after_track_finished_drops_current_on_skip_even_with_loop_queue() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_queue = True
+    state.skip_requested = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del target_guild, fallback_channel_id
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert [track.title for track in state.queue] == ["next"]
+    assert list(state.history) == []
+
+
 def test_play_next_deletes_now_playing_message_when_queue_runs_empty() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog.queue_manager = QueueManager()
@@ -382,6 +448,57 @@ def test_validate_channel_access_allows_when_voice_client_has_no_channel() -> No
     assert is_allowed is True
     assert returned_channel is user_channel
     assert interaction.response.messages == []
+
+
+def test_build_queue_embed_lists_current_and_queued_tracks() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("first"))
+    state.queue.append(_track("second"))
+
+    embed = cog._build_queue_embed(state)
+
+    assert embed.fields[0].name == "Now Playing"
+    assert "current" in embed.fields[0].value
+    assert "first" in embed.description
+    assert "second" in embed.description
+    assert embed.footer.text is not None
+    assert "2 in queue" in embed.footer.text
+
+
+def test_build_queue_embed_reports_empty_queue() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    state = cog.queue_manager.get(1)
+
+    embed = cog._build_queue_embed(state)
+
+    assert embed.description == "Queue is empty."
+
+
+def test_is_playlist_url_detects_list_param_and_playlist_path() -> None:
+    assert (
+        MusicCog._is_playlist_url("https://www.youtube.com/watch?v=abc&list=PL123") is True
+    )
+    assert MusicCog._is_playlist_url("https://www.youtube.com/playlist?list=PL123") is True
+    assert MusicCog._is_playlist_url("https://youtu.be/abc") is False
+    assert MusicCog._is_playlist_url("just a search query") is False
+
+
+def test_parse_timestamp_accepts_seconds_and_colon_forms() -> None:
+    assert MusicCog._parse_timestamp("90") == 90
+    assert MusicCog._parse_timestamp("1:30") == 90
+    assert MusicCog._parse_timestamp("1:02:03") == 3723
+    assert MusicCog._parse_timestamp("0") == 0
+
+
+def test_parse_timestamp_rejects_invalid_values() -> None:
+    assert MusicCog._parse_timestamp("") is None
+    assert MusicCog._parse_timestamp("abc") is None
+    assert MusicCog._parse_timestamp("-5") is None
+    assert MusicCog._parse_timestamp("1:2:3:4") is None
 
 
 def test_prune_autocomplete_request_state_removes_stale_entries() -> None:

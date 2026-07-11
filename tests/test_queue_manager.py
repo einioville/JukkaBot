@@ -78,3 +78,35 @@ def test_clear_preserves_filter_state_by_default() -> None:
     assert cleared.active_audio_filter == "bass=g=7:f=95:w=0.7,treble=g=4:f=4500:w=0.6"
     assert cleared.now_playing_channel_id is None
     assert cleared.repeat_current is False
+
+
+def test_remove_at_removes_track_by_index() -> None:
+    manager = QueueManager()
+    manager.add_track(1, make_track("a"))
+    manager.add_track(1, make_track("b"))
+    manager.add_track(1, make_track("c"))
+
+    removed = manager.remove_at(1, 1)
+
+    assert removed is not None
+    assert removed.title == "b"
+    assert [track.title for track in manager.get(1).queue] == ["a", "c"]
+
+
+def test_remove_at_returns_none_for_out_of_range_index() -> None:
+    manager = QueueManager()
+    manager.add_track(1, make_track("a"))
+
+    assert manager.remove_at(1, 5) is None
+    assert manager.remove_at(1, -1) is None
+    assert [track.title for track in manager.get(1).queue] == ["a"]
+
+
+def test_clear_resets_repeat_queue() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.repeat_queue = True
+
+    manager.clear(1)
+
+    assert manager.get(1).repeat_queue is False

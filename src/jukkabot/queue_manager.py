@@ -21,6 +21,7 @@ class GuildQueue:
     now_playing_channel_id: int | None = None
     skip_requested: bool = False
     repeat_current: bool = False
+    repeat_queue: bool = False
     clear_requested: bool = False
 
 
@@ -54,6 +55,14 @@ class QueueManager:
         track.requested_by_user_id = requested_by_user_id
         track.requested_by_display_name = requested_by_display_name
         self.add_track(guild_id, track)
+
+    def remove_at(self, guild_id: int, index: int) -> Track | None:
+        guild_queue = self.get(guild_id)
+        if index < 0 or index >= len(guild_queue.queue):
+            return None
+        removed = guild_queue.queue[index]
+        del guild_queue.queue[index]
+        return removed
 
     def pop_next(self, guild_id: int) -> Track | None:
         guild_queue = self.get(guild_id)
@@ -108,6 +117,7 @@ class QueueManager:
         guild_queue.now_playing_channel_id = None
         guild_queue.skip_requested = False
         guild_queue.repeat_current = False
+        guild_queue.repeat_queue = False
         guild_queue.clear_requested = False
 
     def to_persistent_state(self) -> dict[str, dict[str, object]]:
