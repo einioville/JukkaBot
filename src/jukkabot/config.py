@@ -11,51 +11,6 @@ from dotenv import load_dotenv
 class Settings:
     token: str
     admin_user_ids: set[int]
-    tracker_api_key: str | None
-    openai_api_key: str | None
-    openai_model: str
-    openai_image_model: str
-    openai_timeout_seconds: int
-    openai_image_timeout_seconds: int
-    chat_temperature: float
-    chat_max_output_tokens: int
-    chat_idle_timeout_seconds: int
-    chat_enable_web_search: bool
-
-
-def _env_int(name: str, default: int, minimum: int | None = None) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    if minimum is not None and value < minimum:
-        return minimum
-    return value
-
-
-def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return max(minimum, min(maximum, value))
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name, "").strip().casefold()
-    if not raw:
-        return default
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def load_settings() -> Settings:
@@ -75,30 +30,7 @@ def load_settings() -> Settings:
                 except ValueError:
                     logging.warning("Ignoring invalid ADMIN_USER_IDS entry: %s", value)
 
-    tracker_api_key = (
-        os.getenv("TRACKER_API_KEY", "").strip() or os.getenv("TRN_API_KEY", "").strip()
-    ) or None
-    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
-    openai_model = os.getenv("OPENAI_MODEL", "").strip() or "gpt-4.1-mini"
-    openai_image_model = os.getenv("OPENAI_IMAGE_MODEL", "").strip() or "gpt-image-1"
-    openai_timeout_seconds = _env_int("OPENAI_TIMEOUT_SECONDS", 30, minimum=1)
-    openai_image_timeout_seconds = _env_int("OPENAI_IMAGE_TIMEOUT_SECONDS", 120, minimum=30)
-    chat_temperature = _env_float("CHAT_TEMPERATURE", 0.8, 0.0, 2.0)
-    chat_max_output_tokens = _env_int("CHAT_MAX_OUTPUT_TOKENS", 220, minimum=1)
-    chat_idle_timeout_seconds = _env_int("CHAT_IDLE_TIMEOUT_SECONDS", 300, minimum=60)
-    chat_enable_web_search = _env_bool("CHAT_ENABLE_WEB_SEARCH", True)
-
     return Settings(
         token=token,
         admin_user_ids=admin_user_ids,
-        tracker_api_key=tracker_api_key,
-        openai_api_key=openai_api_key,
-        openai_model=openai_model,
-        openai_image_model=openai_image_model,
-        openai_timeout_seconds=openai_timeout_seconds,
-        openai_image_timeout_seconds=openai_image_timeout_seconds,
-        chat_temperature=chat_temperature,
-        chat_max_output_tokens=chat_max_output_tokens,
-        chat_idle_timeout_seconds=chat_idle_timeout_seconds,
-        chat_enable_web_search=chat_enable_web_search,
     )

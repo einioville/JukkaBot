@@ -20,23 +20,9 @@
 - `/clear`: clear queue/history/current track and delete now-playing message.
   - Clear is a hard-stop operation: pending playback callbacks must not auto-advance to the next track after `/clear`.
 - `/leave`: disconnect from voice and clear queue/history/current state.
-- `/chat`: chat mode for current channel (`on`, `off`).
-  - One active chat channel per guild.
-  - Auto-disable after 5 minutes of quiet.
-  - Enable is blocked when OpenAI API balance is exhausted.
-  - Uses all channel messages as context; text/image attachments are read only when the bot is mentioned.
-  - Replies only when the bot is mentioned.
-  - For every user message in guild text channels/threads, bot has a 10% chance to send one random GIF link.
-  - GIF links are configured via `config.json` key `chat.random_gif_urls` (falls back to built-in defaults if list is empty/missing).
-  - Supports dynamic-memory updates only when mentioned and message starts with `Muista: ...` (leading bot mention ignored in that check).
-- `/image`: generate images from prompt text, optionally with a reference/edit image attachment.
-  - Command is blocked when OpenAI API balance is exhausted.
-  - Reference image types: `png`, `jpg`, `jpeg`, `webp`, `gif`.
-  - Reference image size limit: 6 MB.
 - `/filter`: apply preset audio filter (`off`, `hiphop`, `edm`, `dance`, `vocal`, `pop`, `rock`, `trebleboost`).
 - `/bass`: apply bass boost with required `level` option (`0..20`).
 - `/banuser`, `/unbanuser`: queue/skip moderation (owner/admin only).
-- `/stats`: Tracker Network stats command exists but is disabled until Tracker app approval.
 
 # Queue and Playback
 - Queue is per guild.
@@ -80,24 +66,6 @@
   - banned users
   - active equalizer/filter
 - `config.json` is gitignored.
-
-# AI Chat Config
-- Chat mode uses OpenAI API.
-- Configure via `.env`:
-  - `OPENAI_API_KEY`
-  - `OPENAI_MODEL`
-  - `OPENAI_IMAGE_MODEL`
-  - `OPENAI_TIMEOUT_SECONDS`
-  - `OPENAI_IMAGE_TIMEOUT_SECONDS`
-  - `CHAT_TEMPERATURE`
-  - `CHAT_MAX_OUTPUT_TOKENS`
-  - `CHAT_IDLE_TIMEOUT_SECONDS`
-  - `CHAT_ENABLE_WEB_SEARCH`
-- Configure prompt via `config.json`:
-  - `chat.system_prompt_file` (project-relative prompt file path)
-- Dynamic memory sync to prompt is append-only: bot may add lines under `[Dynaaminen muisti]` but does not remove existing content.
-- Runtime compatibility: if a model rejects optional parameters, they are auto-disabled and retried.
-- Runtime stability: timeout failures are retried with short backoff.
 
 # Architecture
 - Code lives under `src/`.
