@@ -448,6 +448,29 @@ class MusicCog(commands.Cog):
             paused_total += time.monotonic() - paused_started
         return max(0.0, time.monotonic() - started_at - paused_total)
 
+    async def _restart_current_stream(
+        self, guild: discord.Guild, seek_seconds: float
+    ) -> bool:
+        state = self.queue_manager.get(guild.id)
+        voice = guild.voice_client
+        if state.current_track is None or voice is None:
+            return False
+
+        if seek_seconds > 0.0:
+            self._pending_seek_seconds[guild.id] = seek_seconds
+        else:
+            self._pending_seek_seconds.pop(guild.id, None)
+        state.queue.appendleft(state.current_track)
+        state.skip_requested = True
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()
+            return True
+
+        self.queue_manager.finish_current(guild.id, add_to_history=False)
+        state.skip_requested = False
+        await self._play_next(guild)
+        return True
+
     async def _restart_current_with_active_filter(self, guild: discord.Guild) -> None:
         state = self.queue_manager.get(guild.id)
         voice = guild.voice_client
@@ -455,10 +478,6 @@ class MusicCog(commands.Cog):
             return
 
         elapsed = self._current_elapsed_seconds(guild.id)
-        if elapsed > 0.5:
-            self._pending_seek_seconds[guild.id] = elapsed
-        else:
-            self._pending_seek_seconds.pop(guild.id, None)
         logger.info(
             "Applying filter '%s' by restarting '%s' in channel '%s' at guild '%s'.",
             state.active_filter_preset,
@@ -466,15 +485,7 @@ class MusicCog(commands.Cog):
             self._channel_name(getattr(voice, "channel", None), fallback="Unknown voice channel"),
             self._guild_name(guild),
         )
-        state.queue.appendleft(state.current_track)
-        state.skip_requested = True
-        if voice.is_playing() or voice.is_paused():
-            voice.stop()
-            return
-
-        self.queue_manager.finish_current(guild.id, add_to_history=False)
-        state.skip_requested = False
-        await self._play_next(guild)
+        await self._restart_current_stream(guild, elapsed if elapsed > 0.5 else 0.0)
 
     def _clear_guild_voice_state(self, guild: discord.Guild) -> None:
         guild_id = guild.id
@@ -1530,6 +1541,77 @@ class MusicCog(commands.Cog):
         )
         self._touch_activity(guild.id)
         await self._finalize_silent(interaction)
+
+    @staticmethod
+    def _parse_timestamp(value: str) -> int | None:
+        text = value.strip()
+        if not text:
+            return None
+        parts = text.split(":")
+        if len(parts) > 3:
+            return None
+        try:
+            numbers = [int(part) for part in parts]
+        except ValueError:
+            return None
+        if any(number < 0 for number in numbers):
+            return None
+        seconds = 0
+        for number in numbers:
+            seconds = seconds * 60 + number
+        return seconds
+
+    @app_commands.command(
+        name="seek",
+        description="Jump to a position in the current track (e.g. 90 or 1:30).",
+    )
+    async def seek(self, interaction: discord.Interaction, position: str) -> None:
+        is_allowed, _ = await self._validate_channel_access(interaction)
+        if not is_allowed:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        voice = guild.voice_client
+        if voice is None or state.current_track is None:
+            await interaction.response.send_message(
+                "Nothing is currently playing.", ephemeral=True
+            )
+            return
+
+        target = self._parse_timestamp(position)
+        if target is None:
+            await interaction.response.send_message(
+                "Use seconds or mm:ss, e.g. `90` or `1:30`.", ephemeral=True
+            )
+            return
+
+        duration = state.current_track.duration_seconds
+        if duration > 0 and target >= duration:
+            await interaction.response.send_message(
+                f"Position is past the track length ({state.current_track.duration_label}).",
+                ephemeral=True,
+            )
+            return
+
+        await self._ack_silent(interaction)
+        logger.info(
+            "%s sought to %ss in '%s' at guild '%s'.",
+            self._user_name(interaction.user),
+            target,
+            self._track_name(state.current_track),
+            self._guild_name(guild),
+        )
+        await self._restart_current_stream(guild, float(target))
+        self._touch_activity(guild.id)
+        await self._send_followup_and_finalize(
+            interaction,
+            f"Seeked to {self._format_duration(target)}.",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="clear", description="Clear queue and remove now-playing.")
     async def clear(self, interaction: discord.Interaction) -> None:

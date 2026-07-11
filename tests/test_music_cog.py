@@ -487,6 +487,20 @@ def test_is_playlist_url_detects_list_param_and_playlist_path() -> None:
     assert MusicCog._is_playlist_url("just a search query") is False
 
 
+def test_parse_timestamp_accepts_seconds_and_colon_forms() -> None:
+    assert MusicCog._parse_timestamp("90") == 90
+    assert MusicCog._parse_timestamp("1:30") == 90
+    assert MusicCog._parse_timestamp("1:02:03") == 3723
+    assert MusicCog._parse_timestamp("0") == 0
+
+
+def test_parse_timestamp_rejects_invalid_values() -> None:
+    assert MusicCog._parse_timestamp("") is None
+    assert MusicCog._parse_timestamp("abc") is None
+    assert MusicCog._parse_timestamp("-5") is None
+    assert MusicCog._parse_timestamp("1:2:3:4") is None
+
+
 def test_prune_autocomplete_request_state_removes_stale_entries() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog._autocomplete_request_seq = {

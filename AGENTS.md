@@ -18,6 +18,7 @@
   - A playlist URL (any URL with a `list=` query param or a `/playlist` path) queues all entries, capped at 100 tracks.
 - `/skip`: skip current track.
 - `/pause`: toggle pause/resume.
+- `/seek`: jump to a position in the current track (`seconds` or `mm:ss`); restarts the stream at that offset.
 - `/queue`: show the current track and queued tracks (ephemeral, read-only).
 - `/loop`: set loop mode (`off`, `track`, `queue`).
 - `/remove`: remove one track from the queue.
