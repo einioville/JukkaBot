@@ -54,28 +54,28 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - `tests/`: tests
 
 ## Setup
-1. Create and activate a virtual environment:
+This project is managed with [uv](https://docs.astral.sh/uv/).
+
+1. Install dependencies (creates/updates the project virtual environment from `uv.lock`):
    ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
+   uv sync
    ```
-2. Install dependencies:
-   ```powershell
-   pip install -e . pytest
-   ```
-3. Install FFmpeg and ensure `ffmpeg` is available on `PATH`.
-4. Configure `.env`:
+2. Install FFmpeg and ensure `ffmpeg` is available on `PATH`.
+3. Configure `.env`:
    - `DISCORD_BOT_TOKEN` (required)
    - `ADMIN_USER_IDS` (optional, comma-separated user IDs; invalid entries are ignored)
-5. Run:
+4. Run:
    ```powershell
-   python -m jukkabot
+   uv run jukka
    ```
+   (equivalent to `uv run python -m jukkabot`)
+
+The Python version is pinned via `.python-version` (3.14); `uv` will fetch it automatically if needed.
 
 ## Testing
 - Run all tests:
   ```powershell
-  pytest
+  uv run pytest
   ```
 
 ## Notes
