@@ -41,3 +41,19 @@ def test_entry_to_track_keeps_full_urls_and_falls_back_to_channel() -> None:
 def test_entry_to_track_returns_none_for_invalid_entry() -> None:
     assert MusicService._entry_to_track({}) is None
     assert MusicService._entry_to_track("nope") is None
+
+
+def test_stream_options_target_audio_only_and_keep_dash_formats() -> None:
+    # Guards the streaming-quality regression: forcing android/ios clients or
+    # skipping DASH makes yt-dlp fall back to the muxed 360p stream (itag 18,
+    # AAC) instead of the audio-only Opus stream (itag 251, 48 kHz).
+    opts = MusicService._stream_ydl_options()
+
+    extractor_args = opts.get("extractor_args", {})
+    youtube_args = extractor_args.get("youtube", {}) if isinstance(extractor_args, dict) else {}
+    assert "dash" not in youtube_args.get("skip", [])
+    assert "hls" not in youtube_args.get("skip", [])
+
+    fmt = opts["format"]
+    assert isinstance(fmt, str) and fmt.startswith("bestaudio")
+    assert opts["noplaylist"] is True

@@ -68,7 +68,7 @@ This project is managed with [uv](https://docs.astral.sh/uv/).
    ```powershell
    uv sync
    ```
-2. Install FFmpeg and ensure `ffmpeg` is available on `PATH`.
+2. Install FFmpeg and ensure `ffmpeg` is available on `PATH` (any standard build includes the Opus encoder the bot streams with).
 3. Configure `.env`:
    - `DISCORD_BOT_TOKEN` (required)
    - `ADMIN_USER_IDS` (optional, comma-separated user IDs; invalid entries are ignored)

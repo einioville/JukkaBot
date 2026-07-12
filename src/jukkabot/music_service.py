@@ -25,6 +25,26 @@ class MusicService:
         }
 
     @staticmethod
+    def _stream_ydl_options() -> dict[str, object]:
+        """Options for resolving the actual audio stream to hand to FFmpeg.
+
+        We deliberately do NOT pin ``player_client`` or ``skip`` dash/hls here:
+        YouTube's highest-quality audio is the Opus stream (itag 251, webm/opus,
+        48 kHz) which is a DASH *adaptive* format and matches Discord's native
+        codec. Skipping DASH or forcing the android/ios clients makes yt-dlp fall
+        back to the muxed 360p progressive stream (itag 18, AAC 44.1 kHz) and
+        pull video bytes we immediately throw away. Letting yt-dlp pick the
+        defaults resolves the audio-only Opus stream.
+        """
+        return {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+            "noplaylist": True,
+        }
+
+    @staticmethod
     def _entry_to_track(entry: object) -> Track | None:
         if not isinstance(entry, dict):
             return None
@@ -140,19 +160,7 @@ class MusicService:
         )
 
     def get_stream_source(self, video_url: str) -> StreamSource:
-        stream_options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-            "noplaylist": True,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios", "tv"],
-                    "skip": ["hls", "dash"],
-                }
-            },
-        }
+        stream_options = self._stream_ydl_options()
         with YoutubeDL(stream_options) as ydl:
             info = ydl.extract_info(video_url, download=False)
         if not info:

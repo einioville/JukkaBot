@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -12,7 +13,7 @@ from discord.ext import commands, tasks
 
 from jukkabot.models import Track
 from jukkabot.music_service import MusicService
-from jukkabot.queue_manager import QueueManager
+from jukkabot.queue_manager import GuildQueue, QueueManager
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,7 @@ class MusicCog(commands.Cog):
         self.music_service = music_service
         self.admin_user_ids = admin_user_ids
         self.last_active_by_guild: dict[int, datetime] = {}
+        self._guild_playback_locks: dict[int, asyncio.Lock] = {}
         self._autocomplete_request_seq: dict[tuple[int, int], int] = {}
         self._autocomplete_request_seen_at: dict[tuple[int, int], float] = {}
         self._playback_started_at: dict[int, float] = {}
@@ -272,6 +274,20 @@ class MusicCog(commands.Cog):
 
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
+
+    def _playback_lock(self, guild_id: int) -> asyncio.Lock:
+        # Serializes playback starts per guild so concurrent triggers (a /skip
+        # landing while the after-callback auto-advances, racing /play calls)
+        # can't drive two voice.play() calls into an "Already playing" error.
+        locks = getattr(self, "_guild_playback_locks", None)
+        if locks is None:
+            locks = {}
+            self._guild_playback_locks = locks
+        lock = locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[guild_id] = lock
+        return lock
 
     @staticmethod
     def _looks_like_url(value: str) -> bool:
@@ -318,6 +334,8 @@ class MusicCog(commands.Cog):
             self._autocomplete_request_seen_at.pop(key, None)
 
     def _presence_text(self) -> str:
+        # Discord presence is global to the bot user, so with multiple active
+        # guilds we can only surface one: the first playing guild wins.
         bot = getattr(self, "bot", None)
         guilds = getattr(bot, "guilds", [])
         for guild in guilds:
@@ -819,6 +837,16 @@ class MusicCog(commands.Cog):
             return "Resumed."
         return "Nothing is currently playing."
 
+    @staticmethod
+    def _opus_bitrate_kbps(voice: discord.VoiceClient) -> int:
+        # Discord voice channels report bitrate in bits/sec (64k default, higher
+        # on boosted servers). Track it so we don't down-sample a good source,
+        # clamped to libopus' sane range.
+        channel_bitrate = getattr(getattr(voice, "channel", None), "bitrate", None)
+        if not channel_bitrate:
+            return 128
+        return max(64, min(int(channel_bitrate) // 1000, 510))
+
     async def _play_track(
         self,
         guild: discord.Guild,
@@ -841,8 +869,13 @@ class MusicCog(commands.Cog):
             ffmpeg_before = f"-ss {seek_seconds:.3f} {ffmpeg_before}"
         if stream.user_agent:
             ffmpeg_before = f'{ffmpeg_before} -user_agent "{stream.user_agent}"'
-        source = discord.FFmpegPCMAudio(
+        # Encode straight to Opus with FFmpegOpusAudio instead of decoding to PCM
+        # and letting discord.py re-encode: the source is already Opus (itag 251),
+        # so this avoids a needless decode/re-encode hop. Match the voice channel's
+        # bitrate so we don't cap quality below what the channel supports.
+        source = discord.FFmpegOpusAudio(
             stream.url,
+            bitrate=self._opus_bitrate_kbps(voice),
             before_options=ffmpeg_before,
             options=ffmpeg_options,
         )
@@ -852,7 +885,16 @@ class MusicCog(commands.Cog):
                 self._after_track_finished(guild.id, error), self.bot.loop
             )
             try:
-                future.result()
+                # Bounded wait: this runs on FFmpeg's after-thread, and the
+                # coroutine resolves the next stream over the network. Don't block
+                # the thread forever if that hangs; the coroutine keeps running.
+                future.result(timeout=120)
+            except FutureTimeoutError:
+                logger.warning(
+                    "Playback callback still running after timeout in guild '%s'; "
+                    "not blocking the player thread.",
+                    self._guild_name(guild),
+                )
             except Exception:
                 logger.exception(
                     "Failed to process playback callback in channel '%s' at guild '%s'.",
@@ -961,6 +1003,15 @@ class MusicCog(commands.Cog):
         await self._play_next(guild)
 
     async def _play_next(
+        self, guild: discord.Guild, fallback_channel_id: int | None = None
+    ) -> None:
+        # Hold the per-guild lock across the whole start sequence (including the
+        # network round-trip in _play_track) so only one track can be started at
+        # a time and racing callers observe is_playing()==True and back off.
+        async with self._playback_lock(guild.id):
+            await self._play_next_locked(guild, fallback_channel_id)
+
+    async def _play_next_locked(
         self, guild: discord.Guild, fallback_channel_id: int | None = None
     ) -> None:
         voice = guild.voice_client
@@ -1257,7 +1308,10 @@ class MusicCog(commands.Cog):
             if query and query not in haystack and query != str(index):
                 continue
             label = f"{index}. {track.title} - {track.author}"[:100]
-            choices.append(app_commands.Choice(name=label, value=str(index)))
+            # Value is the track's object identity, not its position: the queue
+            # can shift between picking a suggestion and running /remove, and a
+            # positional value would then delete the wrong track.
+            choices.append(app_commands.Choice(name=label, value=str(id(track))))
             if len(choices) >= 25:
                 break
         return choices
@@ -1682,7 +1736,7 @@ class MusicCog(commands.Cog):
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
 
-    def _build_queue_embed(self, state) -> discord.Embed:  # noqa: ANN001
+    def _build_queue_embed(self, state: GuildQueue) -> discord.Embed:
         embed = discord.Embed(title="JukkaBot - Queue", color=discord.Color(0x1DB954))
         if state.current_track is not None:
             current = state.current_track
@@ -1805,28 +1859,37 @@ class MusicCog(commands.Cog):
             )
             return
 
-        try:
-            position = int(track.strip())
-        except (TypeError, ValueError):
+        token = track.strip()
+        if not token:
             await interaction.response.send_message(
                 "Pick a track from the queue list.", ephemeral=True
             )
             return
 
-        removed = self.queue_manager.remove_at(guild.id, position - 1)
+        # The autocomplete value is the queued track's object identity; find its
+        # current index so a reordered queue still removes the intended track.
+        matched_index = next(
+            (index for index, queued in enumerate(state.queue) if str(id(queued)) == token),
+            None,
+        )
+        removed = (
+            self.queue_manager.remove_at(guild.id, matched_index)
+            if matched_index is not None
+            else None
+        )
         if removed is None:
             await interaction.response.send_message(
-                "That position is no longer in the queue.", ephemeral=True
+                "That track is no longer in the queue. Pick one from the list.",
+                ephemeral=True,
             )
             return
 
         await self._ack_silent(interaction)
         self._touch_activity(guild.id)
         logger.info(
-            "%s removed '%s' (position %s) from the queue in guild '%s'.",
+            "%s removed '%s' from the queue in guild '%s'.",
             self._user_name(interaction.user),
             self._track_name(removed),
-            position,
             self._guild_name(guild),
         )
         await self._refresh_now_playing(guild, interaction.channel_id, edit_existing=True)
