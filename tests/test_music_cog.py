@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from jukkabot.cogs.music import MusicCog
+from jukkabot.cogs.music import MusicCog, _format_up_next, _loop_status_label
 from jukkabot.models import Track
 from jukkabot.queue_manager import QueueManager
 
@@ -138,6 +138,35 @@ def _track(name: str) -> Track:
         author="tester",
         duration_seconds=60,
     )
+
+
+def test_loop_status_label_reflects_active_mode() -> None:
+    state = QueueManager().get(1)
+    assert _loop_status_label(state) is None
+    state.repeat_current = True
+    assert _loop_status_label(state) == "Song Loop On"
+    state.repeat_current = False
+    state.repeat_queue = True
+    assert _loop_status_label(state) == "Queue Loop On"
+
+
+def test_format_up_next_caps_and_counts_remainder() -> None:
+    tracks = [_track(f"t{i}") for i in range(5)]
+    rendered = _format_up_next(tracks, max_items=3)
+    assert rendered == "1. t0\n2. t1\n3. t2\n+2 more"
+
+
+def test_format_up_next_unlimited_lists_every_track() -> None:
+    tracks = [_track(f"t{i}") for i in range(5)]
+    rendered = _format_up_next(tracks, max_items=None)
+    assert rendered == "1. t0\n2. t1\n3. t2\n4. t3\n5. t4"
+
+
+def test_format_up_next_respects_field_char_limit() -> None:
+    tracks = [_track("x" * 90) for _ in range(40)]
+    rendered = _format_up_next(tracks, max_items=None)
+    assert len(rendered) <= 1024
+    assert rendered.endswith("more")
 
 
 def test_previous_restarts_current_track_when_elapsed_is_over_five_seconds() -> None:
@@ -282,7 +311,7 @@ def test_after_track_finished_appends_current_to_queue_end_when_loop_queue_enabl
     assert played_next == [1]
 
 
-def test_after_track_finished_drops_current_on_skip_even_with_loop_queue() -> None:
+def test_after_track_finished_keeps_current_in_ring_on_skip_with_loop_queue() -> None:
     cog = MusicCog.__new__(MusicCog)
     cog.queue_manager = QueueManager()
 
@@ -309,8 +338,71 @@ def test_after_track_finished_drops_current_on_skip_even_with_loop_queue() -> No
 
     asyncio.run(cog._after_track_finished(1, None))
 
-    assert [track.title for track in state.queue] == ["next"]
+    # Skipping keeps the track in the loop ring: it goes to the back, next plays.
+    assert [track.title for track in state.queue] == ["next", "current"]
     assert list(state.history) == []
+
+
+def test_after_track_finished_restarts_current_on_skip_with_song_loop() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_current = True
+    state.skip_requested = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del target_guild, fallback_channel_id
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    # Skipping a song-looped track restarts it: it stays on the front of the queue.
+    assert [track.title for track in state.queue] == ["current", "next"]
+    assert list(state.history) == []
+
+
+def test_after_track_finished_drops_current_on_error_with_loop_queue() -> None:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    state.queue.append(_track("next"))
+    state.repeat_queue = True
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del target_guild, fallback_channel_id
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+
+    asyncio.run(cog._after_track_finished(1, RuntimeError("boom")))
+
+    # A failing track drops out of the ring so it can't loop forever.
+    assert [track.title for track in state.queue] == ["next"]
 
 
 def test_play_next_deletes_now_playing_message_when_queue_runs_empty() -> None:

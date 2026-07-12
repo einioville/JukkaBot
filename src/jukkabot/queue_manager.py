@@ -25,6 +25,26 @@ class GuildQueue:
     clear_requested: bool = False
 
 
+def up_next_tracks(state: GuildQueue) -> list[Track]:
+    """Ordered list of what will play next, accounting for the active loop mode.
+
+    - No loop: the upcoming queue as-is.
+    - Song loop (``repeat_current``): the current track plays next and keeps
+      repeating, so it sits at the top, followed by the waiting queue.
+    - Queue loop (``repeat_queue``): the rest of the queue plays, then the
+      current track cycles back to the end — every track appears exactly once
+      in the order it will actually be played.
+    """
+    current = state.current_track
+    if current is None:
+        return list(state.queue)
+    if state.repeat_current:
+        return [current, *state.queue]
+    if state.repeat_queue:
+        return [*state.queue, current]
+    return list(state.queue)
+
+
 class QueueManager:
     def __init__(self) -> None:
         self._guild_queues: dict[int, GuildQueue] = {}

@@ -13,9 +13,43 @@ from discord.ext import commands, tasks
 
 from jukkabot.models import Track
 from jukkabot.music_service import MusicService
-from jukkabot.queue_manager import GuildQueue, QueueManager
+from jukkabot.queue_manager import GuildQueue, QueueManager, up_next_tracks
 
 logger = logging.getLogger(__name__)
+
+
+def _loop_status_label(state: GuildQueue) -> str | None:
+    """Human-readable loop indicator for the now-playing title, or None if off."""
+    if state.repeat_current:
+        return "Song Loop On"
+    if state.repeat_queue:
+        return "Queue Loop On"
+    return None
+
+
+def _format_up_next(tracks: list[Track], *, max_items: int | None) -> str:
+    """Render an ordered up-next list, capped by count and Discord's field limit.
+
+    ``max_items`` limits how many entries are listed (None means unlimited, used
+    for queue-loop so every track shows). A trailing ``+N more`` is added when
+    entries are dropped for either the count cap or the 1024-char field limit.
+    """
+    lines: list[str] = []
+    shown = 0
+    for position, track in enumerate(tracks, start=1):
+        if max_items is not None and shown >= max_items:
+            break
+        title = track.title if len(track.title) <= 90 else f"{track.title[:87]}..."
+        line = f"{position}. {title}"
+        if lines and len("\n".join([*lines, line])) > 1000:
+            break
+        lines.append(line)
+        shown += 1
+    remaining = len(tracks) - shown
+    if remaining > 0:
+        lines.append(f"+{remaining} more")
+    return "\n".join(lines)
+
 
 FILTER_PRESETS: dict[str, tuple[str, str | None]] = {
     "off": ("Off", None),
@@ -663,8 +697,12 @@ class MusicCog(commands.Cog):
         state = self.queue_manager.get(guild.id)
         voice = guild.voice_client
         status = "Paused" if voice is not None and voice.is_paused() else "Playing"
+        title = f"JukkaBot - {status}"
+        loop_label = _loop_status_label(state)
+        if loop_label is not None:
+            title = f"{title} - {loop_label}"
         embed = discord.Embed(
-            title=f"JukkaBot - {status}",
+            title=title,
             color=discord.Color(0x1DB954),
         )
         embed.add_field(name="Name", value=f"[{track.title}]({track.url})", inline=False)
@@ -672,14 +710,16 @@ class MusicCog(commands.Cog):
         embed.add_field(name="Length", value=track.duration_label, inline=True)
         requested_by = track.requested_by_display_name or "Unknown"
         embed.add_field(name="Queued By", value=requested_by, inline=True)
-        if state.queue:
-            next_count = min(3, len(state.queue))
-            upcoming = "\n".join(
-                f"{index + 1}. {state.queue[index].title}" for index in range(next_count)
+        # Queue loop lists the full ring so every track shows once in play order;
+        # otherwise cap at the next three to keep the embed compact.
+        upcoming_tracks = up_next_tracks(state)
+        if upcoming_tracks:
+            max_items = None if state.repeat_queue else 3
+            embed.add_field(
+                name="Coming Next",
+                value=_format_up_next(upcoming_tracks, max_items=max_items),
+                inline=False,
             )
-            if len(state.queue) > next_count:
-                upcoming = f"{upcoming}\n+{len(state.queue) - next_count} more"
-            embed.add_field(name="Coming Next", value=upcoming, inline=False)
         image_url = self._youtube_thumbnail(track)
         if image_url:
             embed.set_image(url=image_url)
@@ -951,18 +991,21 @@ class MusicCog(commands.Cog):
                 error,
             )
 
+        # Song loop: replay the current track by putting it back on the front.
+        # This covers a natural finish and a manual skip alike — with single-track
+        # loop on, skipping just restarts the song from the beginning. Errors fall
+        # through to a normal advance so a broken track can't loop forever.
         should_repeat = (
             state.repeat_current
-            and not state.skip_requested
+            and error is None
             and state.current_track is not None
         )
-        # Loop-queue: on a natural finish, send the track to the back of the
-        # queue so the whole set keeps cycling. Skips and errors are excluded so
-        # skipped tracks drop out and failing tracks don't loop forever.
+        # Queue loop: send the current track to the back so the whole set keeps
+        # cycling. A skip keeps the track in the ring (it just advances to the
+        # next one); only errors drop a track so a failing one can't loop forever.
         should_loop_queue = (
             state.repeat_queue
             and not state.repeat_current
-            and not state.skip_requested
             and error is None
             and state.current_track is not None
         )

@@ -1,5 +1,5 @@
 from jukkabot.models import Track
-from jukkabot.queue_manager import QueueManager
+from jukkabot.queue_manager import QueueManager, up_next_tracks
 
 
 def make_track(name: str) -> Track:
@@ -110,3 +110,53 @@ def test_clear_resets_repeat_queue() -> None:
     manager.clear(1)
 
     assert manager.get(1).repeat_queue is False
+
+
+def test_up_next_without_loop_is_the_queue_only() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.current_track = make_track("current")
+    state.queue.append(make_track("b"))
+    state.queue.append(make_track("c"))
+
+    assert [t.title for t in up_next_tracks(state)] == ["b", "c"]
+
+
+def test_up_next_song_loop_puts_current_on_top() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.current_track = make_track("current")
+    state.queue.append(make_track("b"))
+    state.repeat_current = True
+
+    assert [t.title for t in up_next_tracks(state)] == ["current", "b"]
+
+
+def test_up_next_queue_loop_lists_full_ring_in_play_order() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.current_track = make_track("a")
+    state.queue.append(make_track("b"))
+    state.queue.append(make_track("c"))
+    state.repeat_queue = True
+
+    # After the current "a", the queue plays, then "a" cycles back to the end.
+    assert [t.title for t in up_next_tracks(state)] == ["b", "c", "a"]
+
+
+def test_up_next_queue_loop_with_single_track_repeats_it() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.current_track = make_track("only")
+    state.repeat_queue = True
+
+    assert [t.title for t in up_next_tracks(state)] == ["only"]
+
+
+def test_up_next_with_no_current_track_is_the_queue() -> None:
+    manager = QueueManager()
+    state = manager.get(1)
+    state.queue.append(make_track("b"))
+    state.repeat_queue = True
+
+    assert [t.title for t in up_next_tracks(state)] == ["b"]
