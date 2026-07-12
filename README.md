@@ -1,13 +1,13 @@
 # JukkaBot
 
-> Note: This is my training project. The goal is to learn using Codex as a development tool.
+> Note: This is a personal learning project for experimenting with Discord bot development.
 
-Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
+A Discord music bot that streams audio from YouTube, built with Python, `discord.py`, `yt-dlp`, and FFmpeg. All playback state (queue, history, moderation, active filter) is tracked per server.
 
 ## Features
 - Slash commands:
   - `/join`: join your voice channel
-  - `/play`: search and queue a track, or queue a whole playlist from a playlist URL
+  - `/play`: search and queue a track, or queue a whole playlist from a playlist URL (capped at 100 tracks)
   - `/skip`: skip current track
   - `/pause`: pause/resume playback
   - `/queue`: show the current track and everything queued (ephemeral)
@@ -53,10 +53,13 @@ Discord music bot project using Python, `discord.py`, `yt-dlp`, and FFmpeg.
 - Graceful shutdown on `Ctrl+C`: bot closes Discord session cleanly.
 
 ## Project Layout
-- `src/jukkabot/`: main bot package
-- `src/jukkabot/cogs/music.py`: music command/cog logic
-- `src/jukkabot/music_service.py`: YouTube search/stream source resolving
-- `tests/`: tests
+- `src/jukkabot/bot.py`: `JukkaBot` client, entrypoint (`run`), and `config.json` persistence
+- `src/jukkabot/config.py`: loads `.env` settings (`DISCORD_BOT_TOKEN`, `ADMIN_USER_IDS`)
+- `src/jukkabot/queue_manager.py`: per-guild queue/history/moderation state (`QueueManager`, `GuildQueue`)
+- `src/jukkabot/music_service.py`: YouTube search, playlist, and stream-source resolving via `yt-dlp`
+- `src/jukkabot/models.py`: the `Track` dataclass
+- `src/jukkabot/cogs/music.py`: all slash commands, now-playing UI, and playback logic
+- `tests/`: pytest suite
 
 ## Setup
 This project is managed with [uv](https://docs.astral.sh/uv/).
