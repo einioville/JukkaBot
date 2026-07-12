@@ -21,7 +21,7 @@ class JukkaBot(commands.Bot):
         intents.guilds = True
         intents.voice_states = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.admin_user_ids = settings.admin_user_ids
         self.queue_manager = QueueManager()
         self.music_service = MusicService()
