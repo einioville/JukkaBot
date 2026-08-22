@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import shlex
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,11 +14,14 @@ from jukkabot.cogs.music import (
     AUTOCOMPLETE_DEADLINE_SECONDS,
     AUTOCOMPLETE_MIN_SEARCH_SECONDS,
     AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS,
+    FFMPEG_STDERR_TAIL_CHARS,
+    PLAYBACK_STALL_SECONDS,
     MusicCog,
     StreamPlaybackError,
     _autocomplete_budget,
     _describe_ffmpeg_exit,
     _ffmpeg_header_args,
+    _ffmpeg_stderr_tail,
     _format_up_next,
     _loop_status_label,
 )
@@ -866,3 +870,166 @@ def test_play_autocomplete_drops_a_query_a_newer_keystroke_replaced() -> None:
         return stale.response.calls
 
     assert asyncio.run(scenario()) == [[]]
+
+
+class _FakeFFmpegProcess:
+    """Stand-in for FFmpeg's Popen: alive until killed, then a non-zero exit."""
+
+    def __init__(self, *, returncode: int | None = None) -> None:
+        self._returncode = returncode
+        self.kills = 0
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def kill(self) -> None:
+        self.kills += 1
+        self._returncode = 1
+
+
+class _FakeAudioPlayer:
+    """Stand-in for discord.py's AudioPlayer thread."""
+
+    def __init__(self, *, loops: int = 0, alive: bool = True, process=None) -> None:  # noqa: ANN001
+        self.loops = loops
+        self._alive = alive
+        self.source = SimpleNamespace(_process=process)
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+def _watchdog_cog(
+    voice: _FakeVoiceClient, player: _FakeAudioPlayer | None
+) -> tuple[MusicCog, _FakeGuild]:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+    voice._player = player  # type: ignore[attr-defined]
+    cog._playback_progress = {}
+    cog._stream_stderr = {}
+    cog.queue_manager.get(1).current_track = _track("stuck")
+    return cog, guild
+
+
+def test_watchdog_kills_ffmpeg_when_frames_stop_advancing() -> None:
+    process = _FakeFFmpegProcess()
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=True, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    # First observation only records the frame count; the stall is measured from
+    # there, so nothing is killed until the count sits still past the threshold.
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    assert process.kills == 0
+
+    asyncio.run(
+        cog._check_playback_progress(guild, PLAYBACK_STALL_SECONDS + 1.0)  # type: ignore[arg-type]
+    )
+    assert process.kills == 1
+
+
+def test_watchdog_leaves_advancing_playback_alone() -> None:
+    process = _FakeFFmpegProcess()
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=True, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    now = 0.0
+    for _ in range(10):
+        asyncio.run(cog._check_playback_progress(guild, now))  # type: ignore[arg-type]
+        player.loops += 750  # 15s of 20ms frames
+        now += PLAYBACK_STALL_SECONDS
+
+    assert process.kills == 0
+
+
+def test_watchdog_fires_after_a_skip_left_the_thread_wedged() -> None:
+    """The regression: voice.stop() clears is_playing() but cannot free the thread.
+
+    A stall that follows a skip reads as neither playing nor paused, so the
+    watchdog must key off the live player thread rather than is_playing().
+    """
+    process = _FakeFFmpegProcess()
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=False, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    asyncio.run(
+        cog._check_playback_progress(guild, PLAYBACK_STALL_SECONDS + 1.0)  # type: ignore[arg-type]
+    )
+
+    assert process.kills == 1
+
+
+def test_watchdog_ignores_a_paused_player() -> None:
+    process = _FakeFFmpegProcess()
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=False, paused=True)
+    cog, guild = _watchdog_cog(voice, player)
+
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    asyncio.run(
+        cog._check_playback_progress(guild, PLAYBACK_STALL_SECONDS + 1.0)  # type: ignore[arg-type]
+    )
+
+    assert process.kills == 0
+    # No window is carried across a pause, so resuming starts fresh.
+    assert 1 not in cog._playback_progress
+
+
+def test_watchdog_ignores_ffmpeg_that_already_exited() -> None:
+    # stdout hits EOF on the next read, so the thread frees itself.
+    process = _FakeFFmpegProcess(returncode=0)
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=True, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    asyncio.run(
+        cog._check_playback_progress(guild, PLAYBACK_STALL_SECONDS + 1.0)  # type: ignore[arg-type]
+    )
+
+    assert process.kills == 0
+
+
+def test_watchdog_ignores_a_finished_player_thread() -> None:
+    process = _FakeFFmpegProcess()
+    player = _FakeAudioPlayer(loops=5000, alive=False, process=process)
+    voice = _FakeVoiceClient(playing=True, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    asyncio.run(
+        cog._check_playback_progress(guild, PLAYBACK_STALL_SECONDS + 1.0)  # type: ignore[arg-type]
+    )
+
+    assert process.kills == 0
+
+
+def test_watchdog_restarts_its_window_after_a_kill() -> None:
+    """A kill that doesn't land gets another full window, not an error a tick."""
+    process = _FakeFFmpegProcess()
+    process.kill = lambda: None  # type: ignore[method-assign]
+    player = _FakeAudioPlayer(loops=5000, process=process)
+    voice = _FakeVoiceClient(playing=True, paused=False)
+    cog, guild = _watchdog_cog(voice, player)
+
+    asyncio.run(cog._check_playback_progress(guild, 0.0))  # type: ignore[arg-type]
+    stalled_at = PLAYBACK_STALL_SECONDS + 1.0
+    asyncio.run(cog._check_playback_progress(guild, stalled_at))  # type: ignore[arg-type]
+
+    assert cog._playback_progress[1] == (5000, stalled_at)
+
+
+def test_ffmpeg_stderr_tail_collapses_whitespace_and_keeps_the_end() -> None:
+    assert _ffmpeg_stderr_tail(None) == ""
+    assert _ffmpeg_stderr_tail(io.BytesIO(b"")) == ""
+    assert _ffmpeg_stderr_tail(io.BytesIO(b"  http:  \n  403 forbidden\n")) == (
+        "http: 403 forbidden"
+    )
+    long = io.BytesIO(b"x" * (FFMPEG_STDERR_TAIL_CHARS + 50) + b"tail")
+    assert _ffmpeg_stderr_tail(long).endswith("tail")
+    assert len(_ffmpeg_stderr_tail(long)) == FFMPEG_STDERR_TAIL_CHARS
