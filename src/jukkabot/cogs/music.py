@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import shlex
+import subprocess
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,31 @@ FFMPEG_MANAGED_HEADERS = frozenset(
 # wedge the queue.
 STREAM_RETRY_LIMIT = 1
 
+# FFmpeg's socket I/O has no timeout by default (the tcp protocol's own
+# -timeout is -1), so a CDN that accepts the connection and then stops sending
+# leaves FFmpeg blocked in recv() forever: alive, silent, and never exiting.
+# discord.py's player thread then parks in a blocking read on FFmpeg's stdout,
+# and AudioPlayer._do_run only rechecks its stop event at the top of the loop --
+# so voice.stop() cannot free it. Pause/skip log fine and do nothing, is_playing()
+# stays True (which also blocks idle_disconnect), and only a disconnect recovers.
+# Bounding the read turns that stall into a normal non-zero exit that
+# _ffmpeg_failure reports and the one-retry path re-resolves. Reconnects are
+# bounded too (delay doubles 0, 1, 3 and gives up past -reconnect_delay_max), so
+# a transient stall recovers in place and a persistent one exits.
+FFMPEG_RW_TIMEOUT_MICROSECONDS = 15_000_000
+
+# Backstop for a wedge -rw_timeout doesn't cover. AudioPlayer.loops counts 20ms
+# frames, so it advances ~50x a second while audio flows; if it hasn't moved
+# this long the thread is parked and only killing FFmpeg frees it. Deliberately
+# slower than every legitimate pause in the frame counter, so those resolve
+# themselves and this only fires on a genuine wedge: FFmpeg's own retry budget
+# runs ~50s (up to three reads at -rw_timeout plus 0+1+3s of backoff) and ends
+# in a non-zero exit with a better error message than a kill produces, and
+# _do_run parks up to VoiceClient.timeout (30s default) waiting out a voice
+# reconnect.
+PLAYBACK_WATCHDOG_INTERVAL_SECONDS = 15
+PLAYBACK_STALL_SECONDS = 90.0
+
 
 class StreamPlaybackError(RuntimeError):
     """FFmpeg died mid-stream instead of reaching the end of the audio."""
@@ -56,6 +82,14 @@ def _describe_ffmpeg_exit(code: int) -> str:
         if marker == 0xF8 and all(0x30 <= byte <= 0x39 for byte in status):
             return f"HTTP {''.join(chr(byte) for byte in status)} from the media host"
     return f"exit code {code}"
+
+
+def _ffmpeg_stderr_tail(stderr: io.BytesIO | None) -> str:
+    """The end of FFmpeg's stderr, collapsed onto one log-friendly line."""
+    if stderr is None:
+        return ""
+    text = " ".join(stderr.getvalue().decode("utf-8", "replace").split())
+    return text[-FFMPEG_STDERR_TAIL_CHARS:]
 
 
 def _ffmpeg_failure(
@@ -82,9 +116,9 @@ def _ffmpeg_failure(
     if not code:
         return None
     detail = _describe_ffmpeg_exit(code)
-    tail = " ".join(stderr.getvalue().decode("utf-8", "replace").split())
+    tail = _ffmpeg_stderr_tail(stderr)
     if tail:
-        detail = f"{detail}: {tail[-FFMPEG_STDERR_TAIL_CHARS:]}"
+        detail = f"{detail}: {tail}"
     return StreamPlaybackError(f"FFmpeg aborted the stream ({detail})")
 
 
@@ -438,11 +472,20 @@ class MusicCog(commands.Cog):
         self._paused_accumulated_seconds: dict[int, float] = {}
         self._pending_seek_seconds: dict[int, float] = {}
         self._stream_retries: dict[int, tuple[str, int]] = {}
+        # FFmpeg's stderr for the track currently playing, so a stall can be
+        # reported with FFmpeg's own reason. Without this the buffer only lives
+        # in _play_track's closure, reachable solely from the after-callback --
+        # which is exactly what never runs when the player thread is parked.
+        self._stream_stderr: dict[int, io.BytesIO] = {}
+        # guild_id -> (last AudioPlayer.loops seen, when it last changed).
+        self._playback_progress: dict[int, tuple[int, float]] = {}
         self._last_presence_text: str | None = None
         self.idle_disconnect.start()
+        self.playback_watchdog.start()
 
     def cog_unload(self) -> None:
         self.idle_disconnect.cancel()
+        self.playback_watchdog.cancel()
 
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
@@ -695,6 +738,8 @@ class MusicCog(commands.Cog):
         self.queue_manager.clear(guild_id)
         self._drop_autocomplete_state_for_guild(guild_id)
         self._stream_retries.pop(guild_id, None)
+        self._stream_stderr.pop(guild_id, None)
+        self._playback_progress.pop(guild_id, None)
         self.last_active_by_guild.pop(guild_id, None)
         self._clear_playback_clock(guild_id)
         logger.info(
@@ -1051,7 +1096,7 @@ class MusicCog(commands.Cog):
         ffmpeg_before = (
             "-nostdin -reconnect 1 -reconnect_streamed 1 "
             "-reconnect_on_network_error 1 -reconnect_on_http_error 5xx "
-            "-reconnect_delay_max 5"
+            f"-reconnect_delay_max 5 -rw_timeout {FFMPEG_RW_TIMEOUT_MICROSECONDS}"
         )
         ffmpeg_options = "-vn -loglevel warning"
         state = self.queue_manager.get(guild.id)
@@ -1071,6 +1116,7 @@ class MusicCog(commands.Cog):
         # Capture FFmpeg's stderr instead of letting it leak to the console, so a
         # failed stream can be reported through the logger with its actual reason.
         stderr_buffer = io.BytesIO()
+        self._stream_stderr[guild.id] = stderr_buffer
         source = discord.FFmpegOpusAudio(
             stream.url,
             bitrate=self._opus_bitrate_kbps(voice),
@@ -1082,6 +1128,18 @@ class MusicCog(commands.Cog):
         def after_playback(error: Exception | None) -> None:
             if error is None:
                 error = _ffmpeg_failure(source, stderr_buffer)
+            if error is None:
+                # -loglevel warning keeps FFmpeg silent unless something went
+                # wrong, so anything here is worth seeing -- reconnect notices in
+                # particular, which are what a stream about to stall says first.
+                warnings = _ffmpeg_stderr_tail(stderr_buffer)
+                if warnings:
+                    logger.warning(
+                        "FFmpeg finished '%s' in guild '%s' with warnings: %s",
+                        self._track_name(track),
+                        self._guild_name(guild),
+                        warnings,
+                    )
             future = asyncio.run_coroutine_threadsafe(
                 self._after_track_finished(guild.id, error), self.bot.loop
             )
@@ -1329,6 +1387,102 @@ class MusicCog(commands.Cog):
                 )
                 await voice.disconnect(force=True)
                 await self._cleanup_after_disconnect(guild)
+
+    @staticmethod
+    def _live_ffmpeg_process(voice: discord.VoiceClient) -> subprocess.Popen | None:
+        """FFmpeg behind a player thread that is still running, else ``None``.
+
+        A dead thread needs no rescue, and neither does one whose FFmpeg has
+        already exited -- that stdout hits EOF on the next read and the thread
+        finishes on its own.
+        """
+        player = getattr(voice, "_player", None)
+        if player is None or not player.is_alive():
+            return None
+        process = getattr(getattr(player, "source", None), "_process", None)
+        if process is None or not hasattr(process, "poll"):
+            return None
+        return None if process.poll() is not None else process
+
+    @tasks.loop(seconds=PLAYBACK_WATCHDOG_INTERVAL_SECONDS)
+    async def playback_watchdog(self) -> None:
+        """Free a player thread parked on a stalled FFmpeg stream.
+
+        ``AudioPlayer`` only rechecks its stop event between frames, so once it
+        blocks reading FFmpeg's stdout nothing Discord-side can reach it:
+        ``voice.stop()`` sets a flag the thread never looks at again, and the
+        stuck ``is_playing()`` keeps ``idle_disconnect`` from firing too. Killing
+        FFmpeg is the one lever that works -- stdout hits EOF, the thread
+        finishes normally, and ``after`` runs the usual path, so the track
+        reaches ``_after_track_finished`` as a retryable failure.
+
+        Note this deliberately does not test ``is_playing()``: a stall that
+        followed a skip has ``_end`` set already, which reads as *not* playing
+        while the thread stays wedged all the same.
+        """
+        now = time.monotonic()
+        for guild in self.bot.guilds:
+            try:
+                await self._check_playback_progress(guild, now)
+            except Exception:
+                logger.exception(
+                    "Playback watchdog failed for guild '%s'.", self._guild_name(guild)
+                )
+
+    async def _check_playback_progress(self, guild: discord.Guild, now: float) -> None:
+        voice = guild.voice_client
+        process = None if voice is None else self._live_ffmpeg_process(voice)
+        # A paused player parks on its own event with frames frozen, which is
+        # not a stall; drop the entry so resuming starts a fresh window.
+        if voice is None or process is None or voice.is_paused():
+            self._playback_progress.pop(guild.id, None)
+            return
+
+        # AudioPlayer.loops counts 20ms frames written to the voice socket, so
+        # it climbs ~50x a second for as long as audio is actually flowing.
+        frames = getattr(getattr(voice, "_player", None), "loops", None)
+        if not isinstance(frames, int):
+            self._playback_progress.pop(guild.id, None)
+            return
+
+        previous = self._playback_progress.get(guild.id)
+        if previous is None or previous[0] != frames:
+            self._playback_progress[guild.id] = (frames, now)
+            return
+
+        stalled_for = now - previous[1]
+        if stalled_for < PLAYBACK_STALL_SECONDS:
+            return
+
+        state = self.queue_manager.get(guild.id)
+        logger.error(
+            "Playback stalled %.0fs on '%s' in channel '%s' at guild '%s'; killing "
+            "FFmpeg to unblock the player thread. FFmpeg stderr: %s",
+            stalled_for,
+            self._track_name(state.current_track),
+            self._channel_name(
+                getattr(voice, "channel", None), fallback="Unknown voice channel"
+            ),
+            self._guild_name(guild),
+            _ffmpeg_stderr_tail(self._stream_stderr.get(guild.id)) or "<empty>",
+        )
+        # Kill rather than source.cleanup(): cleanup sets _stopped, which is what
+        # makes discord.py read the exit as intentional, and _ffmpeg_failure has
+        # to see a failure here for the track to earn its retry.
+        try:
+            process.kill()
+        except Exception:
+            logger.exception(
+                "Failed to kill stalled FFmpeg process in guild '%s'.",
+                self._guild_name(guild),
+            )
+        # Restart the window either way so a kill that didn't land gets one more
+        # full interval rather than an error every tick.
+        self._playback_progress[guild.id] = (frames, now)
+
+    @playback_watchdog.before_loop
+    async def before_playback_watchdog(self) -> None:
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_voice_state_update(
