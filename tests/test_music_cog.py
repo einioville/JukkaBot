@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 
-from jukkabot.cogs.music import MusicCog, _format_up_next, _loop_status_label
+from jukkabot.cogs.music import (
+    MusicCog,
+    StreamPlaybackError,
+    _describe_ffmpeg_exit,
+    _ffmpeg_header_args,
+    _format_up_next,
+    _loop_status_label,
+)
 from jukkabot.models import Track
+from jukkabot.music_service import StreamSource
 from jukkabot.queue_manager import QueueManager
 
 
@@ -253,6 +262,7 @@ def test_after_track_finished_requeues_current_when_repeat_is_enabled() -> None:
     cog._playback_started_at = {1: 1.0}
     cog._paused_started_at = {1: 2.0}
     cog._paused_accumulated_seconds = {1: 3.0}
+    cog._stream_retries = {}
 
     played_next: list[int] = []
 
@@ -292,6 +302,7 @@ def test_after_track_finished_appends_current_to_queue_end_when_loop_queue_enabl
     cog._playback_started_at = {}
     cog._paused_started_at = {}
     cog._paused_accumulated_seconds = {}
+    cog._stream_retries = {}
 
     played_next: list[int] = []
 
@@ -328,6 +339,7 @@ def test_after_track_finished_keeps_current_in_ring_on_skip_with_loop_queue() ->
     cog._playback_started_at = {}
     cog._paused_started_at = {}
     cog._paused_accumulated_seconds = {}
+    cog._stream_retries = {}
 
     async def _fake_play_next(
         target_guild: _FakeGuild, fallback_channel_id: int | None = None
@@ -360,6 +372,7 @@ def test_after_track_finished_restarts_current_on_skip_with_song_loop() -> None:
     cog._playback_started_at = {}
     cog._paused_started_at = {}
     cog._paused_accumulated_seconds = {}
+    cog._stream_retries = {}
 
     async def _fake_play_next(
         target_guild: _FakeGuild, fallback_channel_id: int | None = None
@@ -391,6 +404,7 @@ def test_after_track_finished_drops_current_on_error_with_loop_queue() -> None:
     cog._playback_started_at = {}
     cog._paused_started_at = {}
     cog._paused_accumulated_seconds = {}
+    cog._stream_retries = {}
 
     async def _fake_play_next(
         target_guild: _FakeGuild, fallback_channel_id: int | None = None
@@ -492,6 +506,7 @@ def test_after_track_finished_suppresses_auto_advance_when_clear_is_pending() ->
     cog._playback_started_at = {1: 1.0}
     cog._paused_started_at = {1: 2.0}
     cog._paused_accumulated_seconds = {1: 3.0}
+    cog._stream_retries = {}
     cog._pending_seek_seconds = {}
     cog._last_presence_text = None
 
@@ -612,3 +627,104 @@ def test_prune_autocomplete_request_state_removes_stale_entries() -> None:
     assert (1, 11) not in cog._autocomplete_request_seen_at
     assert (1, 12) in cog._autocomplete_request_seq
     assert (2, 21) in cog._autocomplete_request_seq
+
+
+def test_describe_ffmpeg_exit_decodes_http_error_tags() -> None:
+    # FFmpeg exits with a negated AVERROR; 3436169992 is AVERROR_HTTP_FORBIDDEN.
+    assert _describe_ffmpeg_exit(3436169992) == "HTTP 403 from the media host"
+    assert _describe_ffmpeg_exit(3419392776) == "HTTP 404 from the media host"
+
+
+def test_describe_ffmpeg_exit_falls_back_to_the_raw_code() -> None:
+    assert _describe_ffmpeg_exit(1) == "exit code 1"
+    assert _describe_ffmpeg_exit(4294967274) == "exit code 4294967274"
+
+
+def test_ffmpeg_header_args_replay_yt_dlp_headers() -> None:
+    stream = StreamSource(
+        url="https://cdn/audio",
+        headers={
+            "User-Agent": "Chrome/1 (Windows NT 10.0; Win64)",
+            "Accept": "*/*",
+            "Range": "bytes=0-",
+        },
+    )
+
+    args = shlex.split(_ffmpeg_header_args(stream))
+
+    # User-Agent gets its dedicated flag, Range is left to FFmpeg, and the rest
+    # is replayed verbatim as CRLF-delimited header lines.
+    assert args[:2] == ["-user_agent", "Chrome/1 (Windows NT 10.0; Win64)"]
+    assert args[2] == "-headers"
+    assert args[3] == "Accept: */*\r\n"
+
+
+def test_ffmpeg_header_args_are_empty_without_headers() -> None:
+    assert _ffmpeg_header_args(StreamSource(url="https://cdn/audio")) == ""
+
+
+def _cog_for_after_track(*, queued: list[str]) -> tuple[MusicCog, object]:
+    cog = MusicCog.__new__(MusicCog)
+    cog.queue_manager = QueueManager()
+
+    voice = _FakeVoiceClient(playing=False, paused=False, connected=True)
+    guild = _FakeGuild(1, voice)
+    cog.bot = _FakeBot(guild)
+
+    state = cog.queue_manager.get(1)
+    state.current_track = _track("current")
+    for title in queued:
+        state.queue.append(_track(title))
+
+    cog._playback_started_at = {}
+    cog._paused_started_at = {}
+    cog._paused_accumulated_seconds = {}
+    cog._stream_retries = {}
+
+    async def _fake_play_next(
+        target_guild: _FakeGuild, fallback_channel_id: int | None = None
+    ) -> None:
+        del target_guild, fallback_channel_id
+
+    cog._play_next = _fake_play_next  # type: ignore[assignment]
+    return cog, state
+
+
+def test_after_track_finished_retries_a_dead_stream_once() -> None:
+    cog, state = _cog_for_after_track(queued=["next"])
+
+    asyncio.run(cog._after_track_finished(1, StreamPlaybackError("403")))
+
+    # Re-resolving mints a fresh URL, so the track goes back to the front rather
+    # than being dropped, and it stays out of history until it actually plays.
+    assert [track.title for track in state.queue] == ["current", "next"]
+    assert list(state.history) == []
+
+    # Second failure exhausts the budget: the track is dropped so the queue moves on.
+    state.current_track = state.queue.popleft()
+    asyncio.run(cog._after_track_finished(1, StreamPlaybackError("403")))
+
+    assert [track.title for track in state.queue] == ["next"]
+    assert [track.title for track in state.history] == ["current"]
+    assert cog._stream_retries == {}
+
+
+def test_after_track_finished_does_not_retry_a_skipped_track() -> None:
+    cog, state = _cog_for_after_track(queued=["next"])
+    # Stopping the player kills FFmpeg too, which must not read as a failure.
+    state.skip_requested = True
+
+    asyncio.run(cog._after_track_finished(1, StreamPlaybackError("killed")))
+
+    assert [track.title for track in state.queue] == ["next"]
+    assert cog._stream_retries == {}
+
+
+def test_after_track_finished_clears_the_retry_budget_on_a_clean_finish() -> None:
+    cog, state = _cog_for_after_track(queued=["next"])
+    cog._stream_retries = {1: ("https://youtu.be/current", 1)}
+
+    asyncio.run(cog._after_track_finished(1, None))
+
+    assert cog._stream_retries == {}
+    assert [track.title for track in state.history] == ["current"]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jukkabot.music_service import MusicService
+from jukkabot.music_service import MusicService, StreamSource
 
 
 def test_entry_to_track_builds_track_from_flat_entry() -> None:
@@ -57,3 +57,32 @@ def test_stream_options_target_audio_only_and_keep_dash_formats() -> None:
     fmt = opts["format"]
     assert isinstance(fmt, str) and fmt.startswith("bestaudio")
     assert opts["noplaylist"] is True
+
+
+def test_stream_headers_prefer_the_selected_format() -> None:
+    # The CDN validates headers against the client that minted the URL, so the
+    # format's own headers win over the generic top-level ones.
+    info = {
+        "http_headers": {"User-Agent": "desktop-chrome"},
+        "formats": [
+            {"url": "https://cdn/other", "http_headers": {"User-Agent": "wrong"}},
+            {"url": "https://cdn/audio", "http_headers": {"User-Agent": "android-vr"}},
+        ],
+    }
+
+    headers = MusicService._stream_headers(info, "https://cdn/audio")
+
+    assert headers == {"User-Agent": "android-vr"}
+
+
+def test_stream_headers_fall_back_to_top_level_and_drop_blanks() -> None:
+    info = {"http_headers": {"User-Agent": "ua", "Accept": "", "Referer": None}}
+
+    headers = MusicService._stream_headers(info, "https://cdn/audio")
+
+    assert headers == {"User-Agent": "ua"}
+
+
+def test_stream_source_exposes_user_agent_from_headers() -> None:
+    assert StreamSource(url="https://cdn/a", headers={"User-Agent": "ua"}).user_agent == "ua"
+    assert StreamSource(url="https://cdn/a").user_agent is None

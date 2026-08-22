@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from yt_dlp import YoutubeDL
 
@@ -10,7 +11,11 @@ from jukkabot.models import Track
 @dataclass(frozen=True, slots=True)
 class StreamSource:
     url: str
-    user_agent: str | None = None
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def user_agent(self) -> str | None:
+        return self.headers.get("User-Agent")
 
 
 class MusicService:
@@ -159,6 +164,27 @@ class MusicService:
             thumbnail_url=info.get("thumbnail"),
         )
 
+    @staticmethod
+    def _stream_headers(
+        info: dict, url: str, fmt: dict | None = None
+    ) -> dict[str, str]:
+        """Headers FFmpeg has to replay to fetch ``url``.
+
+        A googlevideo URL is bound to the player client that minted it (see the
+        ``c=`` query param), and the CDN validates the request headers against
+        it. yt-dlp records the matching set on the *format*, so prefer those over
+        the top-level ones and forward all of them -- handing FFmpeg a partial or
+        mismatched set gets a 403 either immediately or partway through playback.
+        """
+        source = fmt
+        if source is None:
+            for candidate in info.get("formats") or []:
+                if isinstance(candidate, dict) and candidate.get("url") == url:
+                    source = candidate
+                    break
+        raw = (source or {}).get("http_headers") or info.get("http_headers") or {}
+        return {str(k): str(v) for k, v in raw.items() if k and v}
+
     def get_stream_source(self, video_url: str) -> StreamSource:
         stream_options = self._stream_ydl_options()
         with YoutubeDL(stream_options) as ydl:
@@ -166,19 +192,18 @@ class MusicService:
         if not info:
             raise RuntimeError("No stream information returned.")
 
-        headers = info.get("http_headers") or {}
-        user_agent = headers.get("User-Agent")
         direct_url = info.get("url")
         if direct_url:
-            return StreamSource(url=direct_url, user_agent=user_agent)
+            return StreamSource(
+                url=direct_url, headers=self._stream_headers(info, direct_url)
+            )
 
         formats = info.get("formats") or []
         for fmt in reversed(formats):
             candidate = fmt.get("url")
             if candidate and fmt.get("acodec") not in (None, "none"):
-                fmt_headers = fmt.get("http_headers") or headers
                 return StreamSource(
                     url=candidate,
-                    user_agent=fmt_headers.get("User-Agent"),
+                    headers=self._stream_headers(info, candidate, fmt),
                 )
         raise RuntimeError("Could not resolve an audio stream URL.")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import shlex
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
@@ -12,10 +14,94 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from jukkabot.models import Track
-from jukkabot.music_service import MusicService
+from jukkabot.music_service import MusicService, StreamSource
 from jukkabot.queue_manager import GuildQueue, QueueManager, up_next_tracks
 
 logger = logging.getLogger(__name__)
+
+# How long to wait for FFmpeg to be reaped once its stdout hits end-of-file
+# (measured at ~9ms, so this is generous), and how much of its stderr to quote
+# when it fails. Keep the grace period short: a skip pays it in full, because an
+# FFmpeg we stopped ourselves is blocked on a full pipe and never exits on its own.
+FFMPEG_EXIT_GRACE_SECONDS = 0.15
+FFMPEG_STDERR_TAIL_CHARS = 200
+
+# Headers FFmpeg negotiates for itself. Replaying yt-dlp's copies would fight its
+# HTTP client -- Range especially, which is how seeking works at all.
+FFMPEG_MANAGED_HEADERS = frozenset(
+    {"user-agent", "host", "range", "accept-encoding", "connection"}
+)
+
+# One retry per track. Re-resolving mints a fresh stream URL, which is all a
+# rejected or expired one needs; beyond that a genuinely dead track would just
+# wedge the queue.
+STREAM_RETRY_LIMIT = 1
+
+
+class StreamPlaybackError(RuntimeError):
+    """FFmpeg died mid-stream instead of reaching the end of the audio."""
+
+
+def _describe_ffmpeg_exit(code: int) -> str:
+    """Render an FFmpeg exit status readably.
+
+    FFmpeg exits with a negated AVERROR, and its HTTP failures are FFERRTAGs
+    whose low byte is 0xF8 followed by the ASCII status code -- so the otherwise
+    opaque 3436169992 is really AVERROR_HTTP_FORBIDDEN, i.e. YouTube said 403.
+    """
+    signed = code - 2**32 if code >= 2**31 else code
+    tag = -signed
+    if tag > 0:
+        marker, *status = ((tag >> shift) & 0xFF for shift in (0, 8, 16, 24))
+        if marker == 0xF8 and all(0x30 <= byte <= 0x39 for byte in status):
+            return f"HTTP {''.join(chr(byte) for byte in status)} from the media host"
+    return f"exit code {code}"
+
+
+def _ffmpeg_failure(
+    source: discord.AudioSource, stderr: io.BytesIO
+) -> StreamPlaybackError | None:
+    """Report an FFmpeg process that died instead of reaching end-of-stream.
+
+    discord.py 2.7.1 cannot do this for us: ``AudioSource.cleanup`` sets
+    ``_stopped`` before ``_check_process_returncode`` reads the exit code, so the
+    check always bails and ``after`` is handed ``None``. Left undetected, a
+    stream that 403s looks exactly like a track that finished normally.
+
+    This runs from the player's ``after`` hook, which fires *before* the source
+    is cleaned up -- so a process still running here is one we stopped ourselves
+    (a skip or a clear), not a failure.
+    """
+    process = getattr(source, "_process", None)
+    if not process or not hasattr(process, "wait"):
+        return None
+    try:
+        code = process.wait(timeout=FFMPEG_EXIT_GRACE_SECONDS)
+    except Exception:
+        return None
+    if not code:
+        return None
+    detail = _describe_ffmpeg_exit(code)
+    tail = " ".join(stderr.getvalue().decode("utf-8", "replace").split())
+    if tail:
+        detail = f"{detail}: {tail[-FFMPEG_STDERR_TAIL_CHARS:]}"
+    return StreamPlaybackError(f"FFmpeg aborted the stream ({detail})")
+
+
+def _ffmpeg_header_args(stream: StreamSource) -> str:
+    """FFmpeg flags that replay yt-dlp's request headers for the stream URL."""
+    args: list[str] = []
+    if stream.user_agent:
+        args.append(f"-user_agent {shlex.quote(stream.user_agent)}")
+    extra = {
+        name: value
+        for name, value in stream.headers.items()
+        if name.lower() not in FFMPEG_MANAGED_HEADERS
+    }
+    if extra:
+        blob = "".join(f"{name}: {value}\r\n" for name, value in extra.items())
+        args.append(f"-headers {shlex.quote(blob)}")
+    return " ".join(args)
 
 
 def _loop_status_label(state: GuildQueue) -> str | None:
@@ -300,6 +386,7 @@ class MusicCog(commands.Cog):
         self._paused_started_at: dict[int, float] = {}
         self._paused_accumulated_seconds: dict[int, float] = {}
         self._pending_seek_seconds: dict[int, float] = {}
+        self._stream_retries: dict[int, tuple[str, int]] = {}
         self._last_presence_text: str | None = None
         self.idle_disconnect.start()
 
@@ -308,6 +395,16 @@ class MusicCog(commands.Cog):
 
     def _touch_activity(self, guild_id: int) -> None:
         self.last_active_by_guild[guild_id] = datetime.now(UTC)
+
+    def _consume_stream_retry(self, guild_id: int, track: Track) -> bool:
+        """Claim a retry slot for ``track``; the budget resets per track."""
+        url, attempts = self._stream_retries.get(guild_id, ("", 0))
+        attempts = attempts if url == track.url else 0
+        if attempts >= STREAM_RETRY_LIMIT:
+            self._stream_retries.pop(guild_id, None)
+            return False
+        self._stream_retries[guild_id] = (track.url, attempts + 1)
+        return True
 
     def _playback_lock(self, guild_id: int) -> asyncio.Lock:
         # Serializes playback starts per guild so concurrent triggers (a /skip
@@ -546,6 +643,7 @@ class MusicCog(commands.Cog):
         history_count = len(state.history)
         self.queue_manager.clear(guild_id)
         self._drop_autocomplete_state_for_guild(guild_id)
+        self._stream_retries.pop(guild_id, None)
         self.last_active_by_guild.pop(guild_id, None)
         self._clear_playback_clock(guild_id)
         logger.info(
@@ -895,9 +993,13 @@ class MusicCog(commands.Cog):
         announce_channel: discord.TextChannel | discord.Thread | None,
     ) -> None:
         stream = await asyncio.to_thread(self.music_service.get_stream_source, track.url)
+        # Only 5xx is worth reconnecting for. A 4xx (403 in particular, which is
+        # what an expired or client-mismatched googlevideo URL returns) is
+        # permanent for that URL, so retrying it just burns the backoff before
+        # failing anyway -- the retry that helps re-resolves the track instead.
         ffmpeg_before = (
             "-nostdin -reconnect 1 -reconnect_streamed 1 "
-            "-reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx "
+            "-reconnect_on_network_error 1 -reconnect_on_http_error 5xx "
             "-reconnect_delay_max 5"
         )
         ffmpeg_options = "-vn -loglevel warning"
@@ -907,20 +1009,28 @@ class MusicCog(commands.Cog):
         seek_seconds = max(0.0, self._pending_seek_seconds.pop(guild.id, 0.0))
         if seek_seconds > 0.0:
             ffmpeg_before = f"-ss {seek_seconds:.3f} {ffmpeg_before}"
-        if stream.user_agent:
-            ffmpeg_before = f'{ffmpeg_before} -user_agent "{stream.user_agent}"'
+        header_args = _ffmpeg_header_args(stream)
+        if header_args:
+            ffmpeg_before = f"{ffmpeg_before} {header_args}"
         # Encode straight to Opus with FFmpegOpusAudio instead of decoding to PCM
         # and letting discord.py re-encode: the source is already Opus (itag 251),
         # so this avoids a needless decode/re-encode hop. Match the voice channel's
         # bitrate so we don't cap quality below what the channel supports.
+        #
+        # Capture FFmpeg's stderr instead of letting it leak to the console, so a
+        # failed stream can be reported through the logger with its actual reason.
+        stderr_buffer = io.BytesIO()
         source = discord.FFmpegOpusAudio(
             stream.url,
             bitrate=self._opus_bitrate_kbps(voice),
             before_options=ffmpeg_before,
             options=ffmpeg_options,
+            stderr=stderr_buffer,
         )
 
         def after_playback(error: Exception | None) -> None:
+            if error is None:
+                error = _ffmpeg_failure(source, stderr_buffer)
             future = asyncio.run_coroutine_threadsafe(
                 self._after_track_finished(guild.id, error), self.bot.loop
             )
@@ -991,6 +1101,20 @@ class MusicCog(commands.Cog):
                 error,
             )
 
+        if error is None:
+            self._stream_retries.pop(guild_id, None)
+
+        # A stream FFmpeg gave up on gets one retry: _play_next re-resolves the
+        # track, minting a fresh URL, which is usually all a rejected or expired
+        # one needs. A skip is never a retry -- stopping the player kills FFmpeg
+        # too, and that must not be mistaken for a failure.
+        should_retry = (
+            isinstance(error, StreamPlaybackError)
+            and finished_track is not None
+            and not state.skip_requested
+            and self._consume_stream_retry(guild_id, finished_track)
+        )
+
         # Song loop: replay the current track by putting it back on the front.
         # This covers a natural finish and a manual skip alike — with single-track
         # loop on, skipping just restarts the song from the beginning. Errors fall
@@ -1013,11 +1137,16 @@ class MusicCog(commands.Cog):
             state.queue.appendleft(state.current_track)
         elif should_loop_queue and state.current_track is not None:
             state.queue.append(state.current_track)
+        elif should_retry and state.current_track is not None:
+            state.queue.appendleft(state.current_track)
         was_skip = state.skip_requested
         self.queue_manager.finish_current(
             guild_id,
             add_to_history=(
-                not state.skip_requested and not should_repeat and not should_loop_queue
+                not state.skip_requested
+                and not should_repeat
+                and not should_loop_queue
+                and not should_retry
             ),
         )
         state.skip_requested = False
@@ -1029,6 +1158,8 @@ class MusicCog(commands.Cog):
                 reason = "repeat"
             elif should_loop_queue:
                 reason = "loop-queue"
+            elif should_retry:
+                reason = "retry"
             elif error:
                 reason = "error"
             elif was_skip:
