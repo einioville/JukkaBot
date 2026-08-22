@@ -160,6 +160,57 @@ REPEAT_QUEUE_EMOJI = "🔁"
 REPEAT_TRACK_EMOJI = "🔂"
 AUTOCOMPLETE_STATE_TTL_SECONDS = 15 * 60
 AUTOCOMPLETE_STATE_MAX_ENTRIES = 1000
+
+# Discord drops an interaction token that has not been answered within three
+# seconds of minting it, and answering a dropped one 404s (error code 10062).
+# The clock starts when Discord created the interaction, not when the gateway
+# handed it to us, so the margin also has to cover our reply's round-trip.
+AUTOCOMPLETE_DEADLINE_SECONDS = 3.0
+AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS = 0.5
+# Trailing debounce, so a burst of typing costs one search instead of one per
+# keystroke -- but it is the first thing sacrificed when the deadline is close.
+AUTOCOMPLETE_DEBOUNCE_SECONDS = 0.5
+# Below this there is no point starting a search (they measure ~1.2s); answering
+# empty and in time beats answering well and too late.
+AUTOCOMPLETE_MIN_SEARCH_SECONDS = 1.5
+
+
+def _autocomplete_budget(interaction: discord.Interaction) -> float:
+    """Seconds left to answer ``interaction``, reply round-trip already reserved.
+
+    ``created_at`` is decoded from the snowflake, so it is Discord's clock, not
+    ours. Clamping keeps a skewed local clock from either handing out a budget
+    larger than the window really is or starving every search.
+    """
+    usable = AUTOCOMPLETE_DEADLINE_SECONDS - AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS
+    elapsed = (datetime.now(UTC) - interaction.created_at).total_seconds()
+    return max(0.0, min(usable, usable - elapsed))
+
+
+async def _answer_autocomplete(
+    interaction: discord.Interaction,
+    choices: list[app_commands.Choice[str]],
+) -> list[app_commands.Choice[str]]:
+    """Answer the autocomplete here so a dead interaction stays quiet.
+
+    discord.py answers for us when we return, but it has no way to tolerate a
+    failure: ``CommandTree._call`` logs a full traceback for anything raised out
+    of ``_invoke_autocomplete``. Suggestions for a query the user has already
+    typed past are worth nothing, so a 404 is noise, not an incident.
+
+    Answering here means ``_invoke_autocomplete`` sees ``is_done()`` and skips
+    its own attempt. On failure we have to mark the response spent by hand --
+    ``is_done()`` reads ``_response_type``, which is only set once the HTTP call
+    succeeds, so otherwise discord.py repeats the call we just watched fail.
+    """
+    try:
+        await interaction.response.autocomplete(choices)
+    except discord.HTTPException as exc:
+        logger.debug("Autocomplete answer dropped by Discord: %s", exc)
+        interaction.response._response_type = (
+            discord.InteractionResponseType.autocomplete_result
+        )
+    return []
 IDLE_PRESENCE_TEXT = "Vitun Pellet"
 MAX_PLAYLIST_TRACKS = 100
 
@@ -1417,6 +1468,12 @@ class MusicCog(commands.Cog):
     async def play_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
+        choices = await self._play_autocomplete_choices(interaction, current)
+        return await _answer_autocomplete(interaction, choices)
+
+    async def _play_autocomplete_choices(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
         now = time.monotonic()
         self._prune_autocomplete_request_state(now=now)
         request_key = (interaction.guild_id or 0, interaction.user.id)
@@ -1428,16 +1485,46 @@ class MusicCog(commands.Cog):
         if len(query) < 2:
             return []
 
-        # Trailing debounce: only search if no newer query from this user arrived
-        # during the 500ms cooldown.
-        await asyncio.sleep(0.5)
+        # Only search if no newer query from this user arrived during the
+        # cooldown -- but never wait out a debounce we cannot afford.
+        debounce = min(
+            AUTOCOMPLETE_DEBOUNCE_SECONDS,
+            _autocomplete_budget(interaction) - AUTOCOMPLETE_MIN_SEARCH_SECONDS,
+        )
+        if debounce > 0:
+            await asyncio.sleep(debounce)
         if self._autocomplete_request_seq.get(request_key) != request_id:
             return []
         self._autocomplete_request_seen_at[request_key] = time.monotonic()
 
+        budget = _autocomplete_budget(interaction)
+        if budget < AUTOCOMPLETE_MIN_SEARCH_SECONDS:
+            logger.debug(
+                "Skipping autocomplete search for %r: only %.2fs of the "
+                "interaction window left.",
+                query,
+                budget,
+            )
+            return []
+
         try:
-            tracks = await asyncio.to_thread(self.music_service.search, query)
+            # The search runs on to completion in its executor thread even when
+            # we stop waiting -- to_thread has nothing to cancel. The debounce is
+            # what keeps that bounded, by collapsing a burst of keystrokes into
+            # a single search.
+            tracks = await asyncio.wait_for(
+                asyncio.to_thread(self.music_service.search, query),
+                timeout=budget,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Search for %r outran the %.2fs left of the autocomplete window.",
+                query,
+                budget,
+            )
+            return []
         except Exception:
+            logger.exception("Autocomplete search for %r failed.", query)
             return []
 
         choices: list[app_commands.Choice[str]] = []

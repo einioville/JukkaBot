@@ -17,12 +17,13 @@ uv run pytest      # run the full test suite
 uv run pytest tests/test_queue_manager.py::test_name   # single test
 ```
 
-FFmpeg must be installed and on `PATH`. The bot needs `.env` with `DISCORD_BOT_TOKEN` (required) and `ADMIN_USER_IDS` (optional, comma-separated).
+FFmpeg must be installed and on `PATH`. The bot needs `.env` with `DISCORD_BOT_TOKEN` (required); `ADMIN_USER_IDS` (comma-separated), `LOG_LEVEL` (default `INFO`) and `LOG_FILE` (default `logs/jukkabot.log`, `off` to disable) are optional.
 
 ## Architecture
 
 - `src/jukkabot/bot.py` — `JukkaBot(commands.Bot)`, the `run()` entrypoint, and `config.json` load/save. Loads the `jukkabot.cogs.music` extension and syncs the command tree in `setup_hook`. Saves persistent state in `close()` (so Ctrl+C / disconnect persists cleanly).
 - `src/jukkabot/config.py` — `load_settings()` reads `.env` into a frozen `Settings` dataclass.
+- `src/jukkabot/logging_setup.py` — `configure_logging()` installs the console + rotating-file handlers, called once from `run()`. Also home to `ProactorTeardownFilter`.
 - `src/jukkabot/queue_manager.py` — `QueueManager` owns a `dict[guild_id -> GuildQueue]`. `GuildQueue` holds queue, history (maxlen 50), banned users, current track, active filter, now-playing message pointers, and the `skip_requested` / `repeat_current` / `repeat_queue` / `clear_requested` flags. Pure data/state logic, no Discord calls — this is the easy-to-unit-test layer.
 - `src/jukkabot/music_service.py` — `MusicService` wraps `yt-dlp`: `search`, `get_playlist`, `get_track`, `get_stream_source`. Runs synchronously; callers offload it with `asyncio.to_thread`. `get_stream_source` returns a `StreamSource` carrying the resolved URL *and* the request headers that go with it.
 - `src/jukkabot/models.py` — the `Track` dataclass (`duration_label` property formats mm:ss).
@@ -43,6 +44,8 @@ FFmpeg must be installed and on `PATH`. The bot needs `.env` with `DISCORD_BOT_T
 - **Previous button:** restarts the current track if elapsed > 5s, otherwise steps back in history.
 - **Idle auto-disconnect** after 5 minutes of fully-idle state (not playing, not paused, no current track, empty queue).
 - **Persistence:** only banned users + active filter/equalizer are written to root `config.json` (atomic temp-file replace). `config.json` is gitignored and auto-created; do not commit it.
+- **Autocomplete has a 3-second deadline.** Discord drops an interaction token that has not been answered within 3s of *minting* it, and answering late raises `NotFound` (10062) — which `CommandTree._call` logs as a traceback we cannot hook. A search costs ~1.2s, so `_play_autocomplete_choices` budgets against `interaction.created_at` (`_autocomplete_budget`): it shortens the debounce first, then skips the search entirely rather than answer late. `play_autocomplete` sends the answer itself so a token that died anyway stays quiet — and on failure has to set `response._response_type` by hand, or discord.py repeats the call. Any new autocomplete that does I/O needs the same treatment.
+- **Log noise from asyncio on Windows is filtered, not fixed.** `_ProactorBasePipeTransport._call_connection_lost` shuts down an already-closed socket on every voice disconnect and Winsock answers `WinError 10022`. `ProactorTeardownFilter` drops exactly that record so the tracebacks that remain are real.
 - **Playlist cap:** `MAX_PLAYLIST_TRACKS = 100`. Playlist detection (`_is_playlist_url`) matches a `list=` query param or a `/playlist` path.
 
 ## Testing

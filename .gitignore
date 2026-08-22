@@ -10,3 +10,4 @@ build/
 .pytest_cache/
 **/.tmp*/
 jukkabot.egg-info/
+logs/

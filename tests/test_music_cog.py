@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import time
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import discord
+import pytest
 
 from jukkabot.cogs.music import (
+    AUTOCOMPLETE_DEADLINE_SECONDS,
+    AUTOCOMPLETE_MIN_SEARCH_SECONDS,
+    AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS,
     MusicCog,
     StreamPlaybackError,
+    _autocomplete_budget,
     _describe_ffmpeg_exit,
     _ffmpeg_header_args,
     _format_up_next,
@@ -728,3 +738,131 @@ def test_after_track_finished_clears_the_retry_budget_on_a_clean_finish() -> Non
 
     assert cog._stream_retries == {}
     assert [track.title for track in state.history] == ["current"]
+
+
+class _FakeAutocompleteResponse:
+    """Stands in for ``InteractionResponse`` for the autocomplete tests."""
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.fails = fails
+        self.calls: list[list[object]] = []
+        self._response_type: object | None = None
+
+    async def autocomplete(self, choices) -> None:  # noqa: ANN001
+        self.calls.append(list(choices))
+        if self.fails:
+            raise discord.NotFound(
+                SimpleNamespace(status=404, reason="Not Found"),
+                {"code": 10062, "message": "Unknown interaction"},
+            )
+        self._response_type = discord.InteractionResponseType.autocomplete_result
+
+    def is_done(self) -> bool:
+        return self._response_type is not None
+
+
+class _FakeAutocompleteInteraction:
+    def __init__(self, *, age_seconds: float = 0.0, fails: bool = False) -> None:
+        self.guild_id = 1
+        self.user = _FakeUser()
+        self.created_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
+        self.response = _FakeAutocompleteResponse(fails=fails)
+
+
+def _autocomplete_cog(search) -> MusicCog:  # noqa: ANN001
+    cog = MusicCog.__new__(MusicCog)
+    cog._autocomplete_request_seq = {}
+    cog._autocomplete_request_seen_at = {}
+    cog.music_service = SimpleNamespace(search=search)
+    return cog
+
+
+def test_autocomplete_budget_shrinks_as_the_interaction_ages() -> None:
+    usable = AUTOCOMPLETE_DEADLINE_SECONDS - AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS
+
+    fresh = _autocomplete_budget(_FakeAutocompleteInteraction())
+    assert fresh == pytest.approx(usable, abs=0.05)
+
+    aged = _autocomplete_budget(_FakeAutocompleteInteraction(age_seconds=1.0))
+    assert aged == pytest.approx(usable - 1.0, abs=0.05)
+
+
+def test_autocomplete_budget_clamps_a_skewed_clock() -> None:
+    usable = AUTOCOMPLETE_DEADLINE_SECONDS - AUTOCOMPLETE_RESPONSE_MARGIN_SECONDS
+    # Local clock behind Discord's must not hand out more than the real window.
+    assert _autocomplete_budget(_FakeAutocompleteInteraction(age_seconds=-30.0)) == usable
+    # And an expired interaction bottoms out at zero rather than going negative.
+    assert _autocomplete_budget(_FakeAutocompleteInteraction(age_seconds=30.0)) == 0.0
+
+
+def test_play_autocomplete_answers_the_interaction_itself() -> None:
+    cog = _autocomplete_cog(lambda query: [_track("hit")])
+    interaction = _FakeAutocompleteInteraction()
+
+    returned = asyncio.run(cog.play_autocomplete(interaction, "query"))  # type: ignore[arg-type]
+
+    # Answering here is what stops discord.py from answering a second time.
+    assert interaction.response.is_done() is True
+    assert [choice.name for choice in interaction.response.calls[0]] == ["hit - tester"]
+    # discord.py only re-sends what we return, so it has to be empty.
+    assert returned == []
+
+
+def test_play_autocomplete_swallows_an_expired_interaction() -> None:
+    cog = _autocomplete_cog(lambda query: [_track("hit")])
+    interaction = _FakeAutocompleteInteraction(fails=True)
+
+    returned = asyncio.run(cog.play_autocomplete(interaction, "query"))  # type: ignore[arg-type]
+
+    assert returned == []
+    # Marked done by hand, or discord.py repeats the call we watched 404.
+    assert interaction.response.is_done() is True
+
+
+def test_play_autocomplete_skips_the_search_when_the_window_is_spent() -> None:
+    searched: list[str] = []
+
+    def search(query: str) -> list[Track]:
+        searched.append(query)
+        return [_track("hit")]
+
+    cog = _autocomplete_cog(search)
+    # Enough budget left to answer, but not enough to finish a ~1.2s search.
+    interaction = _FakeAutocompleteInteraction(age_seconds=1.5)
+    assert 0 < _autocomplete_budget(interaction) < AUTOCOMPLETE_MIN_SEARCH_SECONDS
+
+    asyncio.run(cog.play_autocomplete(interaction, "query"))  # type: ignore[arg-type]
+
+    assert searched == []
+    assert interaction.response.calls == [[]]
+
+
+def test_play_autocomplete_gives_up_on_a_search_that_outruns_the_window() -> None:
+    def slow_search(query: str) -> list[Track]:
+        time.sleep(5)
+        return [_track("hit")]
+
+    cog = _autocomplete_cog(slow_search)
+    # Aged so the remaining budget is short enough to keep the test quick.
+    interaction = _FakeAutocompleteInteraction(age_seconds=1.0)
+    started = time.monotonic()
+
+    asyncio.run(cog.play_autocomplete(interaction, "query"))  # type: ignore[arg-type]
+
+    assert time.monotonic() - started < AUTOCOMPLETE_DEADLINE_SECONDS
+    assert interaction.response.calls == [[]]
+
+
+def test_play_autocomplete_drops_a_query_a_newer_keystroke_replaced() -> None:
+    cog = _autocomplete_cog(lambda query: [_track("hit")])
+
+    async def scenario() -> list[object]:
+        stale = _FakeAutocompleteInteraction()
+        task = asyncio.ensure_future(cog.play_autocomplete(stale, "quer"))  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+        # A newer keystroke from the same user bumps the sequence number.
+        await cog.play_autocomplete(_FakeAutocompleteInteraction(), "query")  # type: ignore[arg-type]
+        await task
+        return stale.response.calls
+
+    assert asyncio.run(scenario()) == [[]]

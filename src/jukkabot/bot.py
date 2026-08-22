@@ -9,10 +9,9 @@ import discord
 from discord.ext import commands
 
 from jukkabot.config import Settings, load_settings
+from jukkabot.logging_setup import configure_logging
 from jukkabot.music_service import MusicService
 from jukkabot.queue_manager import QueueManager
-
-logging.basicConfig(level=logging.INFO)
 
 
 class JukkaBot(commands.Bot):
@@ -77,6 +76,7 @@ class JukkaBot(commands.Bot):
 
 def run() -> None:
     settings = load_settings()
+    configure_logging(settings.log_level, settings.log_file)
     bot = JukkaBot(settings)
 
     async def runner() -> None:
